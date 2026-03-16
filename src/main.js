@@ -1,6 +1,8 @@
 import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 const scene = new THREE.Scene();
+
 scene.background = new THREE.Color('skyblue');
 
 // Create a camera
@@ -50,6 +52,15 @@ const keys = {};
 window.addEventListener('keydown', (e) => keys[e.key] = true);
 window.addEventListener('keyup', (e) => keys[e.key] = false);
 
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enablePan = false; // optional: prevent panning
+controls.mouseButtons = {
+    RIGHT: THREE.MOUSE.ROTATE  // right-click to orbit
+};
+
+camera.position.x = sphere.position.x;
+camera.position.z = sphere.position.z + 15;
+camera.position.y = sphere.position.y + 3;
 //it helps to draw on a loop
 function animate() {
     requestAnimationFrame(animate);
@@ -60,10 +71,8 @@ function animate() {
     if (keys['d'] || keys['D']) sphere.position.x += 0.1;
 
     // Camera follows the sphere
-    camera.position.x = sphere.position.x;
-    camera.position.z = sphere.position.z + 10;
-    camera.position.y = sphere.position.y + 3;
-    camera.lookAt(sphere.position);
+    controls.target.copy(sphere.position);
+    controls.update();
     renderer.render(scene, camera);
 }
 animate();
