@@ -105,11 +105,17 @@ controls.mouseButtons = {
     RIGHT: THREE.MOUSE.ROTATE  // right-click to orbit
 };
 
+<<<<<<< HEAD
 //where camera beigns 
 camera.position.x = sphere.position.x;
 camera.position.z = sphere.position.z + 15;
 camera.position.y = sphere.position.y + 3;
 
+=======
+camera.position.x = sphere.position.x;
+camera.position.z = sphere.position.z + 15;
+camera.position.y = sphere.position.y + 3;
+>>>>>>> 5cfc50671ca910d88de2e9805ad3dfaf35609f3a
 //it helps to draw on a loop
 function animate() {
     requestAnimationFrame(animate);
