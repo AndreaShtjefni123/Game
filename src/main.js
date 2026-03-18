@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { npcs, createNPCs, updateNPCs } from "./npc.js";
 
 const scene = new THREE.Scene();
 
@@ -56,7 +57,9 @@ function createWalls(amount) {
 
         for (let j = 0; j < walls.length; j++) {
             const existingBox = new THREE.Box3().setFromObject(walls[j]);
-            if (newBox.intersectsBox(existingBox)) {
+            // increased from intersectsBox to a distance check of 20 units
+            const dist = wall.position.distanceTo(walls[j].position);
+            if (dist < 20) {
                 overlapping = true;
                 break;
             }
@@ -105,17 +108,19 @@ controls.mouseButtons = {
     RIGHT: THREE.MOUSE.ROTATE  // right-click to orbit
 };
 
-<<<<<<< HEAD
+
 //where camera beigns 
 camera.position.x = sphere.position.x;
 camera.position.z = sphere.position.z + 15;
 camera.position.y = sphere.position.y + 3;
 
-=======
+
 camera.position.x = sphere.position.x;
 camera.position.z = sphere.position.z + 15;
 camera.position.y = sphere.position.y + 3;
->>>>>>> 5cfc50671ca910d88de2e9805ad3dfaf35609f3a
+
+createNPCs(3, scene, sphere);
+
 //it helps to draw on a loop
 function animate() {
     requestAnimationFrame(animate);
@@ -131,12 +136,13 @@ function animate() {
     const cameraRight = new THREE.Vector3();
     cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0)).normalize();
 
-    const speed = 0.1;
+    const speed = 0.18;
     // Move sphere with WASD
     if (keys['w'] || keys['W']) sphere.position.addScaledVector(cameraDirection, speed);
     if (keys['s'] || keys['S']) sphere.position.addScaledVector(cameraDirection, -speed);
     if (keys['a'] || keys['A']) sphere.position.addScaledVector(cameraRight, -speed);
     if (keys['d'] || keys['D']) sphere.position.addScaledVector(cameraRight, speed);
+
 
     // Check collision against every wall
     const ballBox = new THREE.Box3().setFromObject(sphere);
@@ -150,6 +156,9 @@ function animate() {
             break;
         }
     }
+
+
+    updateNPCs(npcs, sphere, ballBox, walls);
     // Camera follows the sphere
     controls.target.copy(sphere.position);
     controls.update();
