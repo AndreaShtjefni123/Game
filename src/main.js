@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { npcs, createNPCs, updateNPCs } from "./npc.js";
+import { bullets, shoot, updateBullets } from "./shoot.js";
+import { updateClock, showFinalTime } from "./clock.js";
 
 const scene = new THREE.Scene();
 
@@ -102,12 +104,17 @@ const keys = {};
 window.addEventListener('keydown', (e) => keys[e.key] = true);
 window.addEventListener('keyup', (e) => keys[e.key] = false);
 
+
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enablePan = false; // optional: prevent panning
 controls.mouseButtons = {
     RIGHT: THREE.MOUSE.ROTATE  // right-click to orbit
 };
-
+window.addEventListener('mousedown', (e) => {
+    if (e.button === 0) { // left click only
+        shoot(e, camera, sphere, scene); // note: passing 'e' (the event) now
+    }
+});
 
 //where camera beigns 
 camera.position.x = sphere.position.x;
@@ -121,45 +128,58 @@ camera.position.y = sphere.position.y + 3;
 
 createNPCs(3, scene, sphere);
 
+
 //it helps to draw on a loop
+let gameOver = false;
+
 function animate() {
     requestAnimationFrame(animate);
-
+    if (gameOver) return; // stops everything when dead
+    updateClock();
+    showFinalTime();
     const previousPosition = sphere.position.clone();
-    // get the direction the camera is facing on the XZ plane
+
     const cameraDirection = new THREE.Vector3();
     camera.getWorldDirection(cameraDirection);
-    cameraDirection.y = 0;           // ignore vertical, stay on ground
-    cameraDirection.normalize();     // keep length at 1
+    cameraDirection.y = 0;
+    cameraDirection.normalize();
 
-    // get the camera's right direction
     const cameraRight = new THREE.Vector3();
     cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0)).normalize();
 
     const speed = 0.18;
-    // Move sphere with WASD
     if (keys['w'] || keys['W']) sphere.position.addScaledVector(cameraDirection, speed);
     if (keys['s'] || keys['S']) sphere.position.addScaledVector(cameraDirection, -speed);
     if (keys['a'] || keys['A']) sphere.position.addScaledVector(cameraRight, -speed);
     if (keys['d'] || keys['D']) sphere.position.addScaledVector(cameraRight, speed);
 
-
-    // Check collision against every wall
+    // wall collision
     const ballBox = new THREE.Box3().setFromObject(sphere);
-
     for (let i = 0; i < walls.length; i++) {
         const wallBox = new THREE.Box3().setFromObject(walls[i]);
-
         if (ballBox.intersectsBox(wallBox)) {
-            // Collision! snap back to where we were
             sphere.position.copy(previousPosition);
             break;
         }
     }
 
-
+    // update NPCs
     updateNPCs(npcs, sphere, ballBox, walls);
-    // Camera follows the sphere
+
+    // check if any NPC touched the player
+    for (let i = 0; i < npcs.length; i++) {
+        const npcBox = new THREE.Box3().setFromObject(npcs[i]);
+        if (npcBox.intersectsBox(ballBox)) {
+            gameOver = true;
+            document.getElementById('gameOver').style.display = 'flex';
+            return; // stop the rest of this frame immediately
+        }
+    }
+
+    // update bullets
+    updateBullets(bullets, npcs, walls, scene);
+
+    // camera follows sphere
     controls.target.copy(sphere.position);
     controls.update();
     renderer.render(scene, camera);

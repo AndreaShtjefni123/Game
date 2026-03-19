@@ -36,9 +36,9 @@ export function updateNPCs(npcs, sphere, ballBox, walls) {
         direction.y = 0; //ignore vertical
         direction.normalize(); //keep length at 1
 
-        const speed = 0.04;
+        const speed = 0.06;
 
-        // --- separation: push away from other NPCs ---
+        // separation: push away from other NPCs
         const separation = new THREE.Vector3();
         for (let j = 0; j < npcs.length; j++) {
             if (i === j) continue; // skip self
@@ -55,7 +55,7 @@ export function updateNPCs(npcs, sphere, ballBox, walls) {
         }
         npc.position.add(separation);
 
-        // --- try full move first ---
+        // try full move first
         npc.position.addScaledVector(direction, speed); //move the npc in the direction of the sphere
 
         const npcBox = new THREE.Box3().setFromObject(npc);
@@ -70,7 +70,7 @@ export function updateNPCs(npcs, sphere, ballBox, walls) {
 
         if (!blocked) continue; // full move worked, skip to next NPC
 
-        // --- full move was blocked, try X only ---
+        // full move was blocked, try X only
         npc.position.copy(previousPosition);
         npc.position.x += direction.x * speed;
 

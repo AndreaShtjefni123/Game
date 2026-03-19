@@ -1,13 +1,29 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>game</title>
-  </head>
-  <body>
-    <div id="app"></div>
-    <script type="module" src="/src/main.js"></script>
-  </body>
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>game</title>
+</head>
+
+<body>
+  <div id="gameOver"
+    style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:rgba(0,0,0,0.8); padding:40px; color:white; font-family:sans-serif; text-align:center; border-radius:10px; flex-direction:column; align-items:center; gap:20px; width:400px;">
+    <h1 style="font-size:48px; margin:0;">Game Over</h1>
+    <p style="font-size:20px; margin:0;">You were caught by an NPC!</p>
+    <p id="finalTime" style="font-size: 20px; margin: 0; color: #ffaa00;"></p>
+    <button onclick="window.location.reload()"
+      style="padding:12px 30px; font-size:18px; cursor:pointer; border:none; background:white; color:black; border-radius:6px;">Play
+      Again</button>
+
+  </div>
+  <div id="timer"
+    style="position:absolute; top:20px; left:50%; transform:translateX(-50%); color:white; font-size:28px; font-family:Arial; text-shadow:2px 2px 4px black;">
+    Time: 0s</div>
+  <div id="app"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+
 </html>
