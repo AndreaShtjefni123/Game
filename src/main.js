@@ -127,13 +127,11 @@ camera.position.z = sphere.position.z + 15;
 camera.position.y = sphere.position.y + 3;
 
 createNPCs(3, scene, sphere);
-function getSpawnAmount() {
-    const minute = Math.floor(survivalTime / 60);
-    return 2 * Math.pow(2, minute);
-    // 0-60s:    2 per kill
-    // 60-120s:  4 per kill
-    // 120-180s: 8 per kill
-}
+// function getSpawnAmount() {
+//     const minute = Math.floor(survivalTime / 60);
+//     return 2 * Math.pow(2, minute);
+// }
+//this would be needed only if we want the spawn rate to be based on time and kills.
 
 
 let gameOver = false;
@@ -199,8 +197,10 @@ function animate() {
         for (let k = 0; k < killsThisFrame; k++) {
             addKill();
         }
-        const spawnAmount = getSpawnAmount() * killsThisFrame;
-        createNPCs(spawnAmount, scene, sphere); // spawn more based on time and kills
+        const SPAWN_PER_KILL = 2; //spawn rate only based on kills
+        createNPCs(SPAWN_PER_KILL * killsThisFrame, scene, sphere);
+        // const spawnAmount = getSpawnAmount() * killsThisFrame; 
+        // createNPCs(spawnAmount, scene, sphere); ======= spawn more based on time and kills
     }
 
     // camera follows sphere
