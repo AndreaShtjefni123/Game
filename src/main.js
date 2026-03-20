@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { npcs, createNPCs, updateNPCs } from "./npc.js";
 import { bullets, shoot, updateBullets } from "./shoot.js";
-import { updateClock, showFinalTime } from "./clock.js";
+import { updateClock, showFinalTime, showFinalKills, addKill, totalKills, survivalTime } from "./clock.js";
 
 const scene = new THREE.Scene();
 
@@ -127,16 +127,23 @@ camera.position.z = sphere.position.z + 15;
 camera.position.y = sphere.position.y + 3;
 
 createNPCs(3, scene, sphere);
+function getSpawnAmount() {
+    const minute = Math.floor(survivalTime / 60);
+    return 2 * Math.pow(2, minute);
+    // 0-60s:    2 per kill
+    // 60-120s:  4 per kill
+    // 120-180s: 8 per kill
+}
+
+
+let gameOver = false;
 
 
 //it helps to draw on a loop
-let gameOver = false;
-
 function animate() {
     requestAnimationFrame(animate);
     if (gameOver) return; // stops everything when dead
     updateClock();
-    showFinalTime();
     const previousPosition = sphere.position.clone();
 
     const cameraDirection = new THREE.Vector3();
@@ -163,6 +170,15 @@ function animate() {
         }
     }
 
+    if
+        (sphere.position.x > 50 || sphere.position.x < -50 || sphere.position.z > 50 || sphere.position.z < -50) {
+        gameOver = true;
+        showFinalTime();
+        showFinalKills();
+        document.getElementById('gameOver').style.display = 'flex';
+        return; // stop the rest of this frame immediately
+    }
+
     // update NPCs
     updateNPCs(npcs, sphere, ballBox, walls);
 
@@ -171,13 +187,21 @@ function animate() {
         const npcBox = new THREE.Box3().setFromObject(npcs[i]);
         if (npcBox.intersectsBox(ballBox)) {
             gameOver = true;
+            showFinalTime();
+            showFinalKills();
             document.getElementById('gameOver').style.display = 'flex';
             return; // stop the rest of this frame immediately
         }
     }
 
-    // update bullets
-    updateBullets(bullets, npcs, walls, scene);
+    const killsThisFrame = updateBullets(bullets, npcs, walls, scene);
+    if (killsThisFrame > 0) {
+        for (let k = 0; k < killsThisFrame; k++) {
+            addKill();
+        }
+        const spawnAmount = getSpawnAmount() * killsThisFrame;
+        createNPCs(spawnAmount, scene, sphere); // spawn more based on time and kills
+    }
 
     // camera follows sphere
     controls.target.copy(sphere.position);

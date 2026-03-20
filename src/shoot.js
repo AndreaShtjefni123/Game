@@ -38,11 +38,10 @@ export function shoot(event, camera, sphere, scene) {
 }
 
 export function updateBullets(bullets, npcs, walls, scene) { // walls added here
+    let killsThisFrame = 0;
     for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
-
         bullet.mesh.position.addScaledVector(bullet.dir, 0.4);
-
         const bulletBox = new THREE.Box3().setFromObject(bullet.mesh);
 
         // check if bullet hit a wall
@@ -69,6 +68,7 @@ export function updateBullets(bullets, npcs, walls, scene) { // walls added here
                 npcs.splice(j, 1);
                 scene.remove(bullet.mesh);
                 bullets.splice(i, 1);
+                killsThisFrame++;
                 hitNPC = true;
                 break;
             }
@@ -76,4 +76,5 @@ export function updateBullets(bullets, npcs, walls, scene) { // walls added here
 
         if (hitNPC) continue;
     }
+    return killsThisFrame;
 }
