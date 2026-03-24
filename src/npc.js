@@ -2,7 +2,7 @@ import * as THREE from "three";
 
 export const npcs = []; //array to store all the npcs and export it to main.js
 
-export function createNPCs(amount, scene, sphere) { //create npcs= amount of npcs + scene + sphere(the player)
+export function createNPCs(amount, scene, player) { //create npcs= amount of npcs + scene + player
     for (let i = 0; i < amount; i++) { //loop to create npcs
         const npcGeo = new THREE.BoxGeometry(1.5, 2, 1.5);
         const npcMat = new THREE.MeshStandardMaterial({ color: 0xff0000 });
@@ -14,7 +14,7 @@ export function createNPCs(amount, scene, sphere) { //create npcs= amount of npc
             Math.random() * 70 - 35
         );
 
-        if (npc.position.distanceTo(sphere.position) < 10) { //if the npc is too close to the player, skip it
+        if (npc.position.distanceTo(player.position) < 10) { //if the npc is too close to the player, skip it
             i--;
             continue;
         }
@@ -24,7 +24,7 @@ export function createNPCs(amount, scene, sphere) { //create npcs= amount of npc
     }
 }
 
-export function updateNPCs(npcs, sphere, ballBox, walls) {
+export function updateNPCs(npcs, player, ballBox, walls) {
     for (let i = 0; i < npcs.length; i++) {
         const npc = npcs[i];
 
@@ -32,7 +32,7 @@ export function updateNPCs(npcs, sphere, ballBox, walls) {
         const previousPosition = npc.position.clone();
 
         const direction = new THREE.Vector3(); //direction of the npc
-        direction.subVectors(sphere.position, npc.position); //subtract the npc position from the sphere position
+        direction.subVectors(player.position, npc.position); //subtract the npc position from the player position
         direction.y = 0; //ignore vertical
         direction.normalize(); //keep length at 1
 

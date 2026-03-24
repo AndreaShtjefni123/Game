@@ -5,7 +5,7 @@ export const bullets = [];
 const raycaster = new THREE.Raycaster();
 const aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-export function shoot(event, camera, sphere, scene) {
+export function shoot(event, camera, player, scene) {
     const mouse = new THREE.Vector2(
         (event.clientX / window.innerWidth) * 2 - 1,
         -(event.clientY / window.innerHeight) * 2 + 1
@@ -23,13 +23,13 @@ export function shoot(event, camera, sphere, scene) {
     const bullet = new THREE.Mesh(bulletGeo, bulletMat);
 
     bullet.position.set(
-        sphere.position.x,
-        sphere.position.y,
-        sphere.position.z
+        player.position.x,
+        player.position.y,
+        player.position.z
     );
 
     const direction = new THREE.Vector3();
-    direction.subVectors(targetPoint, sphere.position);
+    direction.subVectors(targetPoint, player.position);
     direction.y = 0;
     direction.normalize();
 

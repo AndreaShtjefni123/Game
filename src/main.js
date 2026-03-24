@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { npcs, createNPCs, updateNPCs } from "./npc.js";
 import { bullets, shoot, updateBullets } from "./shoot.js";
 import { updateClock, showFinalTime, showFinalKills, addKill, totalKills, survivalTime } from "./clock.js";
@@ -9,13 +10,13 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color('skyblue');
 
 // Create a camera
-const fov = 35;
+const fov = 60;
 const aspect = window.innerWidth / window.innerHeight;
 const near = 1;
 const far = 500;
 
 const camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
-camera.position.set(0, 3, 10);
+camera.position.set(0, 20, 12);
 camera.lookAt(0, 0, 0); // point the camera at the center
 
 // Renderer
@@ -23,10 +24,55 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
-const geometry = new THREE.SphereGeometry(1, 32, 16);
-const material = new THREE.MeshStandardMaterial({ color: 0xffff00 });
-const sphere = new THREE.Mesh(geometry, material);
-scene.add(sphere);
+// ── PLAYER (duck model) ──────────────────────────────
+// Create a Group so all existing code can reference player.position
+// immediately, even before the GLB finishes loading.
+const player = new THREE.Group();
+scene.add(player);
+
+// We'll start the game loop only after the model is loaded
+let modelLoaded = false;
+
+const loader = new GLTFLoader();
+loader.load(
+    "/scriptduck.glb",
+    (gltf) => {
+        const duck = gltf.scene;
+
+        // Remove cameras and lights that were exported from Blender
+        // (they conflict with the game's own camera and lighting)
+        const toRemove = [];
+        duck.traverse((child) => {
+            if (child.isCamera || child.isLight) {
+                toRemove.push(child);
+            }
+        });
+        toRemove.forEach((obj) => obj.parent.remove(obj));
+
+        // Scale the duck to roughly match the old sphere size
+        // Adjust these values if the duck appears too big or too small
+        duck.scale.set(2.5, 2.5, 2.5);
+
+        // Rotate so the duck faces forward (along -Z in game)
+        duck.rotation.y = Math.PI;
+
+        player.add(duck);
+        modelLoaded = true;
+        console.log("✅ Duck model loaded!");
+    },
+    (progress) => {
+        console.log(`Loading duck: ${Math.round((progress.loaded / progress.total) * 100)}%`);
+    },
+    (error) => {
+        console.error("❌ Failed to load duck model:", error);
+        // Fallback: add a yellow sphere so the game is still playable
+        const fallbackGeo = new THREE.SphereGeometry(1, 32, 16);
+        const fallbackMat = new THREE.MeshStandardMaterial({ color: 0xffff00 });
+        const fallbackMesh = new THREE.Mesh(fallbackGeo, fallbackMat);
+        player.add(fallbackMesh);
+        modelLoaded = true;
+    }
+);
 
 const walls = [];
 function createWalls(amount) {
@@ -47,8 +93,8 @@ function createWalls(amount) {
             wall.rotation.y = Math.PI / 2; // vertical wall (90 degrees)
         }
 
-        // Skip if too close to ball's start
-        if (wall.position.distanceTo(sphere.position) < 8) {
+        // Skip if too close to player's start
+        if (wall.position.distanceTo(player.position) < 8) {
             i--;
             continue;
         }
@@ -82,7 +128,7 @@ const floorGeometry = new THREE.PlaneGeometry(100, 100);
 const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 });
 const floor = new THREE.Mesh(floorGeometry, floorMaterial);
 floor.rotation.x = -Math.PI / 2; // lay it flat
-floor.position.y = -1;           // push it down below the sphere
+floor.position.y = -1;           // push it down below the player
 scene.add(floor);
 
 // Grid overlay so you can see movement
@@ -106,27 +152,28 @@ window.addEventListener('keyup', (e) => keys[e.key] = false);
 
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.enablePan = false; // optional: prevent panning
+controls.enablePan = false;
+controls.enableZoom = true;           // scroll wheel zooms in/out
+controls.minDistance = 5;             // closest zoom
+controls.maxDistance = 50;            // farthest zoom
 controls.mouseButtons = {
-    RIGHT: THREE.MOUSE.ROTATE  // right-click to orbit
+    MIDDLE: THREE.MOUSE.ROTATE,       // middle-click (scroll wheel click) to orbit
+    RIGHT: THREE.MOUSE.ROTATE         // right-click to orbit too
 };
 window.addEventListener('mousedown', (e) => {
     if (e.button === 0) { // left click only
-        shoot(e, camera, sphere, scene); // note: passing 'e' (the event) now
+        shoot(e, camera, player, scene); // passing player instead of sphere
     }
 });
 
-//where camera beigns 
-camera.position.x = sphere.position.x;
-camera.position.z = sphere.position.z + 15;
-camera.position.y = sphere.position.y + 3;
+// where camera begins — offset above and behind the player
+camera.position.set(
+    player.position.x,
+    player.position.y + 20,
+    player.position.z + 12
+);
 
-
-camera.position.x = sphere.position.x;
-camera.position.z = sphere.position.z + 15;
-camera.position.y = sphere.position.y + 3;
-
-createNPCs(3, scene, sphere);
+createNPCs(3, scene, player);
 // function getSpawnAmount() {
 //     const minute = Math.floor(survivalTime / 60);
 //     return 2 * Math.pow(2, minute);
@@ -141,8 +188,9 @@ let gameOver = false;
 function animate() {
     requestAnimationFrame(animate);
     if (gameOver) return; // stops everything when dead
+    if (!modelLoaded) return; // wait for duck model to load
     updateClock();
-    const previousPosition = sphere.position.clone();
+    const previousPosition = player.position.clone();
 
     const cameraDirection = new THREE.Vector3();
     camera.getWorldDirection(cameraDirection);
@@ -153,23 +201,26 @@ function animate() {
     cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0)).normalize();
 
     const speed = 0.18;
-    if (keys['w'] || keys['W']) sphere.position.addScaledVector(cameraDirection, speed);
-    if (keys['s'] || keys['S']) sphere.position.addScaledVector(cameraDirection, -speed);
-    if (keys['a'] || keys['A']) sphere.position.addScaledVector(cameraRight, -speed);
-    if (keys['d'] || keys['D']) sphere.position.addScaledVector(cameraRight, speed);
+    if (keys['w'] || keys['W']) player.position.addScaledVector(cameraDirection, speed);
+    if (keys['s'] || keys['S']) player.position.addScaledVector(cameraDirection, -speed);
+    if (keys['a'] || keys['A']) player.position.addScaledVector(cameraRight, -speed);
+    if (keys['d'] || keys['D']) player.position.addScaledVector(cameraRight, speed);
 
-    // wall collision
-    const ballBox = new THREE.Box3().setFromObject(sphere);
+    // wall collision — use a manual bounding box for the player group
+    const playerBox = new THREE.Box3().setFromCenterAndSize(
+        player.position,
+        new THREE.Vector3(1.5, 2, 1.5) // approximate duck hitbox
+    );
     for (let i = 0; i < walls.length; i++) {
         const wallBox = new THREE.Box3().setFromObject(walls[i]);
-        if (ballBox.intersectsBox(wallBox)) {
-            sphere.position.copy(previousPosition);
+        if (playerBox.intersectsBox(wallBox)) {
+            player.position.copy(previousPosition);
             break;
         }
     }
 
     if
-        (sphere.position.x > 50 || sphere.position.x < -50 || sphere.position.z > 50 || sphere.position.z < -50) {
+        (player.position.x > 50 || player.position.x < -50 || player.position.z > 50 || player.position.z < -50) {
         gameOver = true;
         showFinalTime();
         showFinalKills();
@@ -178,12 +229,12 @@ function animate() {
     }
 
     // update NPCs
-    updateNPCs(npcs, sphere, ballBox, walls);
+    updateNPCs(npcs, player, playerBox, walls);
 
     // check if any NPC touched the player
     for (let i = 0; i < npcs.length; i++) {
         const npcBox = new THREE.Box3().setFromObject(npcs[i]);
-        if (npcBox.intersectsBox(ballBox)) {
+        if (npcBox.intersectsBox(playerBox)) {
             gameOver = true;
             showFinalTime();
             showFinalKills();
@@ -198,13 +249,13 @@ function animate() {
             addKill();
         }
         const SPAWN_PER_KILL = 2; //spawn rate only based on kills
-        createNPCs(SPAWN_PER_KILL * killsThisFrame, scene, sphere);
+        createNPCs(SPAWN_PER_KILL * killsThisFrame, scene, player);
         // const spawnAmount = getSpawnAmount() * killsThisFrame; 
-        // createNPCs(spawnAmount, scene, sphere); ======= spawn more based on time and kills
+        // createNPCs(spawnAmount, scene, player); ======= spawn more based on time and kills
     }
 
-    // camera follows sphere
-    controls.target.copy(sphere.position);
+    // camera follows player
+    controls.target.copy(player.position);
     controls.update();
     renderer.render(scene, camera);
 }
