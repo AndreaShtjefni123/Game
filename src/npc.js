@@ -1,30 +1,55 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 export const npcs = []; //array to store all the npcs and export it to main.js
 
-export function createNPCs(amount, scene, player) { //create npcs= amount of npcs + scene + player
-    for (let i = 0; i < amount; i++) { //loop to create npcs
-        const npcGeo = new THREE.BoxGeometry(1.5, 2, 1.5);
-        const npcMat = new THREE.MeshStandardMaterial({ color: 0xff0000 });
-        const npc = new THREE.Mesh(npcGeo, npcMat);
+const loader = new GLTFLoader();
 
-        npc.position.set(
-            Math.random() * 70 - 35, //random position but inside the floor
-            0, //ground level
-            Math.random() * 70 - 35
-        );
+function spawnFox(scene, player, onSpawned) {
+    loader.load(
+        "/scriptfox.glb",
+        (gltf) => {
+            const npc = gltf.scene;
+            npc.scale.set(3, 3, 3);
 
-        if (npc.position.distanceTo(player.position) < 10) { //if the npc is too close to the player, skip it
-            i--;
-            continue;
+            let x, z;
+            do {
+                x = Math.random() * 70 - 35;
+                z = Math.random() * 70 - 35;
+            } while (new THREE.Vector3(x, 0, z).distanceTo(player.position) < 20);
+
+            npc.position.set(x, 0, z);
+            scene.add(npc);
+            npcs.push(npc);
+            if (onSpawned) onSpawned(npc);
+        },
+        undefined,
+        () => {
+            // fallback to red box if model fails to load
+            const npc = new THREE.Mesh(
+                new THREE.BoxGeometry(1.5, 2, 1.5),
+                new THREE.MeshStandardMaterial({ color: 0xff0000 })
+            );
+            let x, z;
+            do {
+                x = Math.random() * 70 - 35;
+                z = Math.random() * 70 - 35;
+            } while (new THREE.Vector3(x, 0, z).distanceTo(player.position) < 20);
+            npc.position.set(x, 0, z);
+            scene.add(npc);
+            npcs.push(npc);
+            if (onSpawned) onSpawned(npc);
         }
+    );
+}
 
-        scene.add(npc);
-        npcs.push(npc);
+export function createNPCs(amount, scene, player) {
+    for (let i = 0; i < amount; i++) {
+        spawnFox(scene, player);
     }
 }
 
-export function updateNPCs(npcs, player, ballBox, walls) {
+export function updateNPCs(npcs, player, _playerBox, walls) {
     for (let i = 0; i < npcs.length; i++) {
         const npc = npcs[i];
 
@@ -35,6 +60,9 @@ export function updateNPCs(npcs, player, ballBox, walls) {
         direction.subVectors(player.position, npc.position); //subtract the npc position from the player position
         direction.y = 0; //ignore vertical
         direction.normalize(); //keep length at 1
+
+        // face the player
+        npc.rotation.y = Math.atan2(direction.x, direction.z) + Math.PI;
 
         const speed = 0.06;
 
@@ -55,10 +83,12 @@ export function updateNPCs(npcs, player, ballBox, walls) {
         }
         npc.position.add(separation);
 
-        // try full move first
-        npc.position.addScaledVector(direction, speed); //move the npc in the direction of the sphere
+        const NPC_SIZE = new THREE.Vector3(1.5, 3, 1.5); // manual hitbox, avoids GLTF bbox issues
 
-        const npcBox = new THREE.Box3().setFromObject(npc);
+        // try full move first
+        npc.position.addScaledVector(direction, speed);
+
+        const npcBox = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
         let blocked = false;
         for (let j = 0; j < walls.length; j++) {
             const wallBox = new THREE.Box3().setFromObject(walls[j]);
@@ -74,7 +104,7 @@ export function updateNPCs(npcs, player, ballBox, walls) {
         npc.position.copy(previousPosition);
         npc.position.x += direction.x * speed;
 
-        const npcBoxX = new THREE.Box3().setFromObject(npc);
+        const npcBoxX = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
         let blockedX = false;
         for (let j = 0; j < walls.length; j++) {
             const wallBox = new THREE.Box3().setFromObject(walls[j]);
@@ -88,7 +118,7 @@ export function updateNPCs(npcs, player, ballBox, walls) {
         // --- try Z only ---
         npc.position.z += direction.z * speed;
 
-        const npcBoxZ = new THREE.Box3().setFromObject(npc);
+        const npcBoxZ = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
         let blockedZ = false;
         for (let j = 0; j < walls.length; j++) {
             const wallBox = new THREE.Box3().setFromObject(walls[j]);

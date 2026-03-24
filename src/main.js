@@ -24,6 +24,12 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
 // ── PLAYER (duck model) ──────────────────────────────
 // Create a Group so all existing code can reference player.position
 // immediately, even before the GLB finishes loading.
@@ -51,7 +57,7 @@ loader.load(
 
         // Scale the duck to roughly match the old sphere size
         // Adjust these values if the duck appears too big or too small
-        duck.scale.set(2.5, 2.5, 2.5);
+        duck.scale.set(1.5, 1.5, 1.5);
 
         // Rotate so the duck faces forward (along -Z in game)
         duck.rotation.y = Math.PI;
@@ -157,8 +163,8 @@ controls.enableZoom = true;           // scroll wheel zooms in/out
 controls.minDistance = 5;             // closest zoom
 controls.maxDistance = 50;            // farthest zoom
 controls.mouseButtons = {
-    MIDDLE: THREE.MOUSE.ROTATE,       // middle-click (scroll wheel click) to orbit
-    RIGHT: THREE.MOUSE.ROTATE         // right-click to orbit too
+    LEFT: THREE.MOUSE.ROTATE,         // left-click to orbit
+    RIGHT: THREE.MOUSE.ROTATE         // right-click to orbit
 };
 window.addEventListener('mousedown', (e) => {
     if (e.button === 0) { // left click only
@@ -201,10 +207,18 @@ function animate() {
     cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0)).normalize();
 
     const speed = 0.18;
-    if (keys['w'] || keys['W']) player.position.addScaledVector(cameraDirection, speed);
-    if (keys['s'] || keys['S']) player.position.addScaledVector(cameraDirection, -speed);
-    if (keys['a'] || keys['A']) player.position.addScaledVector(cameraRight, -speed);
-    if (keys['d'] || keys['D']) player.position.addScaledVector(cameraRight, speed);
+    const moveDir = new THREE.Vector3();
+    if (keys['w'] || keys['W']) moveDir.addScaledVector(cameraDirection, 1);
+    if (keys['s'] || keys['S']) moveDir.addScaledVector(cameraDirection, -1);
+    if (keys['a'] || keys['A']) moveDir.addScaledVector(cameraRight, -1);
+    if (keys['d'] || keys['D']) moveDir.addScaledVector(cameraRight, 1);
+
+    if (moveDir.lengthSq() > 0) {
+        moveDir.normalize();
+        player.position.addScaledVector(moveDir, speed);
+        // rotate duck to face movement direction (+ Math.PI compensates for the model's built-in flip)
+        player.rotation.y = Math.atan2(moveDir.x, moveDir.z);
+    }
 
     // wall collision — use a manual bounding box for the player group
     const playerBox = new THREE.Box3().setFromCenterAndSize(
