@@ -28,25 +28,7 @@ A button fills up the longer the player survives. When activated, smaller ducks 
   - **The Attack (10 Seconds):** We will spawn 3-5 tiny duck models (using `duck.glb` but scaled down) that orbit the player or seek out nearby foxes and destroy them on contact.
 - **UI:** Add an Ultimate Bar or stylized "Duck Button" overlay that fills up visually. When fully charged, it can pulse or glow.
 
-## Proposed Code Changes
 
-### [MODIFY] `index.html` & `style.css` (or inline styles)
-- Add `<div id="healthBarContainer">` containing an inner `healthBar` element.
-- Add `<div id="ultimateBarContainer">` containing the charge progress, and a text prompt (e.g., "Press SPACE for DUCK ATTACK").
-- Add a damage overlay (a full-screen div that briefly flashes red when hit).
-
-### [MODIFY] `main.js`
-- Integrate health state (`let health = 100;`).
-- Integrate i-frames timer.
-- Update the collision check in `animate()`: instead of `gameOver = true`, we deduct health, trigger i-frames, and check if health <= 0 for the game over screen.
-- Manage the ultimate meter (`let ultimateCharge = 0`) and listen for the activation key.
-
-### [NEW] `pickups.js`
-- Contains functions to spawn, update, and manage collision for popcorn meshes.
-
-### [NEW] `ultimate.js` (Optional, to keep code clean)
-- Logic for spawning the tiny helper ducks and updating their movement (orbiting the player or homing in on foxes).
-- Managing the 10-second active duration and cleaning up the helper ducks when it ends.
 
 ## Additional Gameplay Suggestions
 *If you like these, we can include them in the implementation:*

@@ -1,51 +1,101 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
-export const npcs = []; //array to store all the npcs and export it to main.js
+export const npcs = [];
+
+// Load the fox model ONCE — every spawn clones this template
+let foxTemplate = null;
+const pendingSpawns = []; // queued spawns requested before model finished loading
 
 const loader = new GLTFLoader();
+loader.load(
+    "/scriptfox.glb",
+    (gltf) => {
+        const model = gltf.scene;
+        // strip any cameras/lights baked in from Blender
+        const toRemove = [];
+        model.traverse((child) => {
+            if (child.isCamera || child.isLight) toRemove.push(child);
+        });
+        toRemove.forEach((obj) => obj.parent.remove(obj));
 
-function spawnFox(scene, player, onSpawned) {
-    loader.load(
-        "/scriptfox.glb",
-        (gltf) => {
-            const npc = gltf.scene;
-            npc.scale.set(3, 3, 3);
+        foxTemplate = model;
+        console.log("✅ Fox template loaded — flushing", pendingSpawns.length, "queued spawns");
 
-            let x, z;
-            do {
-                x = Math.random() * 70 - 35;
-                z = Math.random() * 70 - 35;
-            } while (new THREE.Vector3(x, 0, z).distanceTo(player.position) < 20);
-
-            npc.position.set(x, 0, z);
-            scene.add(npc);
-            npcs.push(npc);
-            if (onSpawned) onSpawned(npc);
-        },
-        undefined,
-        () => {
-            // fallback to red box if model fails to load
-            const npc = new THREE.Mesh(
-                new THREE.BoxGeometry(1.5, 2, 1.5),
-                new THREE.MeshStandardMaterial({ color: 0xff0000 })
-            );
-            let x, z;
-            do {
-                x = Math.random() * 70 - 35;
-                z = Math.random() * 70 - 35;
-            } while (new THREE.Vector3(x, 0, z).distanceTo(player.position) < 20);
-            npc.position.set(x, 0, z);
-            scene.add(npc);
-            npcs.push(npc);
-            if (onSpawned) onSpawned(npc);
+        // flush anything that was requested before the model finished
+        for (const { scene, player, isBoss } of pendingSpawns) {
+            if (isBoss) _spawnBossNow(scene, player);
+            else        _spawnFoxNow(scene, player);
         }
+        pendingSpawns.length = 0;
+    },
+    undefined,
+    (err) => console.warn("⚠️ Fox model failed to load, will use fallback boxes.", err)
+);
+
+// ── internal helpers ──────────────────────────────────────────────────────────
+
+function randomPos(player) {
+    let x, z;
+    do {
+        x = Math.random() * 70 - 35;
+        z = Math.random() * 70 - 35;
+    } while (new THREE.Vector3(x, 0, z).distanceTo(player.position) < 20);
+    return { x, z };
+}
+
+function makeFallbackBox(scaleX, scaleY, scaleZ, color) {
+    return new THREE.Mesh(
+        new THREE.BoxGeometry(scaleX, scaleY, scaleZ),
+        new THREE.MeshStandardMaterial({ color })
     );
 }
 
+function _spawnFoxNow(scene, player) {
+    const npc = foxTemplate
+        ? foxTemplate.clone(true)
+        : makeFallbackBox(1.5, 2, 1.5, 0xff0000);
+
+    npc.scale.set(3, 3, 3);
+    const { x, z } = randomPos(player);
+    npc.position.set(x, 0, z);
+    scene.add(npc);
+    npcs.push(npc);
+}
+
+function _spawnBossNow(scene, player) {
+    const boss = foxTemplate
+        ? foxTemplate.clone(true)
+        : makeFallbackBox(4, 6, 4, 0x800000);
+
+    boss.scale.set(8, 8, 8);
+    boss.userData.isBoss = true;
+    boss.userData.hp = 100;
+    const { x, z } = randomPos(player);
+    boss.position.set(x, 0, z);
+    scene.add(boss);
+    npcs.push(boss);
+    document.getElementById('bossBarContainer').style.display = 'block';
+    document.getElementById('bossBarInner').style.width = '100%';
+}
+
+// ── public API ────────────────────────────────────────────────────────────────
+
 export function createNPCs(amount, scene, player) {
     for (let i = 0; i < amount; i++) {
-        spawnFox(scene, player);
+        if (foxTemplate) {
+            _spawnFoxNow(scene, player);
+        } else {
+            pendingSpawns.push({ scene, player, isBoss: false });
+        }
+    }
+}
+
+export function createBoss(scene, player) {
+    if (foxTemplate) {
+        _spawnBossNow(scene, player);
+    } else {
+        pendingSpawns.push({ scene, player, isBoss: true });
     }
 }
 
@@ -53,37 +103,41 @@ export function updateNPCs(npcs, player, _playerBox, walls) {
     for (let i = 0; i < npcs.length; i++) {
         const npc = npcs[i];
 
-        // save BEFORE anything moves
         const previousPosition = npc.position.clone();
 
-        const direction = new THREE.Vector3(); //direction of the npc
-        direction.subVectors(player.position, npc.position); //subtract the npc position from the player position
-        direction.y = 0; //ignore vertical
-        direction.normalize(); //keep length at 1
+        const direction = new THREE.Vector3();
+        direction.subVectors(player.position, npc.position);
+        direction.y = 0;
+        direction.normalize();
 
         // face the player
         npc.rotation.y = Math.atan2(direction.x, direction.z) + Math.PI;
 
-        const speed = 0.06;
+        const speed = npc.userData.isBoss ? 0.05 : 0.10;
+
+        // boss ignores walls — move directly toward player and skip wall checks
+        if (npc.userData.isBoss) {
+            npc.position.addScaledVector(direction, speed);
+            continue;
+        }
 
         // separation: push away from other NPCs
         const separation = new THREE.Vector3();
         for (let j = 0; j < npcs.length; j++) {
-            if (i === j) continue; // skip self
-            const other = npcs[j];
-            const dist = npc.position.distanceTo(other.position);
-            if (dist < 3) { // if closer than 3 units, push away
+            if (i === j) continue;
+            const dist = npc.position.distanceTo(npcs[j].position);
+            if (dist < 3) {
                 const pushDir = new THREE.Vector3();
-                pushDir.subVectors(npc.position, other.position); // away from other
+                pushDir.subVectors(npc.position, npcs[j].position);
                 pushDir.y = 0;
                 pushDir.normalize();
-                pushDir.multiplyScalar((3 - dist) * 0.05); // stronger push the closer they are
+                pushDir.multiplyScalar((3 - dist) * 0.05);
                 separation.add(pushDir);
             }
         }
         npc.position.add(separation);
 
-        const NPC_SIZE = new THREE.Vector3(1.5, 3, 1.5); // manual hitbox, avoids GLTF bbox issues
+        const NPC_SIZE = new THREE.Vector3(1.5, 3, 1.5);
 
         // try full move first
         npc.position.addScaledVector(direction, speed);
@@ -91,42 +145,39 @@ export function updateNPCs(npcs, player, _playerBox, walls) {
         const npcBox = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
         let blocked = false;
         for (let j = 0; j < walls.length; j++) {
-            const wallBox = new THREE.Box3().setFromObject(walls[j]);
-            if (npcBox.intersectsBox(wallBox)) {
+            if (npcBox.intersectsBox(new THREE.Box3().setFromObject(walls[j]))) {
                 blocked = true;
                 break;
             }
         }
 
-        if (!blocked) continue; // full move worked, skip to next NPC
+        if (!blocked) continue;
 
-        // full move was blocked, try X only
+        // try X only
         npc.position.copy(previousPosition);
         npc.position.x += direction.x * speed;
 
         const npcBoxX = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
         let blockedX = false;
         for (let j = 0; j < walls.length; j++) {
-            const wallBox = new THREE.Box3().setFromObject(walls[j]);
-            if (npcBoxX.intersectsBox(wallBox)) {
+            if (npcBoxX.intersectsBox(new THREE.Box3().setFromObject(walls[j]))) {
                 blockedX = true;
                 break;
             }
         }
-        if (blockedX) npc.position.x = previousPosition.x; // revert X if blocked
+        if (blockedX) npc.position.x = previousPosition.x;
 
-        // --- try Z only ---
+        // try Z only
         npc.position.z += direction.z * speed;
 
         const npcBoxZ = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
         let blockedZ = false;
         for (let j = 0; j < walls.length; j++) {
-            const wallBox = new THREE.Box3().setFromObject(walls[j]);
-            if (npcBoxZ.intersectsBox(wallBox)) {
+            if (npcBoxZ.intersectsBox(new THREE.Box3().setFromObject(walls[j]))) {
                 blockedZ = true;
                 break;
             }
         }
-        if (blockedZ) npc.position.z = previousPosition.z; // revert Z if blocked
+        if (blockedZ) npc.position.z = previousPosition.z;
     }
 }
