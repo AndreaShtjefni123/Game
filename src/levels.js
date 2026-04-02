@@ -1,118 +1,114 @@
+// heal is used to restore the player's health to full as a level-up reward
 import { heal } from "./health.js";
+// createNPCs and createBoss are used to spawn the next wave after leveling up
 import { createNPCs, createBoss } from "./npc.js";
 
-// ─────────────────────────────────────────────
-// STATE
-// Keeps track of what level the player is on
-// and how many kills they need to reach the next one.
-// ─────────────────────────────────────────────
+// ── STATE ─────────────────────────────────────────────────────────────────────
+
+// Tracks which level the player is currently on — starts at 1
 export let currentLevel = 1;
-let killTarget = 15;      // kills needed to advance from level 1 → 2
-let levelingUp = false;   // guard so level-up can't fire twice in one frame
+// How many total kills are needed to trigger the next level-up
+let killTarget = 15;
+// Guard flag — prevents level-up from firing more than once if multiple kills land in the same frame
+let levelingUp = false;
 
-// ─────────────────────────────────────────────
-// GETTERS
-// These are read by main.js and npc.js so they
-// always get the live value for the current level.
-// ─────────────────────────────────────────────
+// ── GETTERS ───────────────────────────────────────────────────────────────────
 
+// Returns the current level — read by main.js to display the level on the HUD
 export function getCurrentLevel() {
     return currentLevel;
 }
 
-// Fox speed starts at 0.12 and increases by 15% each level.
-// e.g. level 1 = 0.12, level 2 = 0.138, level 3 = 0.159 ...
+// Fox move speed scales up 15% per level
+// Level 1 = 1.0x (base), Level 2 = 1.15x, Level 3 = 1.30x, etc.
 export function getFoxSpeedMultiplier() {
     return 1.0 + (currentLevel - 1) * 0.15;
 }
 
-// Spawn cooldown starts at 2s and shrinks by 0.25s each level,
-// but never goes below 0.5s so the game stays playable.
+// How long between NPC spawns — shrinks each level to increase pressure
+// Starts at 2 seconds, reduces by 0.25s per level, minimum 0.5s
 export function getSpawnCooldown() {
     return Math.max(0.5, 2.0 - (currentLevel - 1) * 0.25);
 }
 
-// How many kills are needed to reach the next level.
+// Returns the total kill count needed to advance to the next level
 export function getKillTarget() {
     return killTarget;
 }
 
-// ─────────────────────────────────────────────
-// CHECK LEVEL UP  (called every frame in main.js)
-// Compares totalKills against the current kill target.
-// If the player has hit it and we're not already leveling up, fire doLevelUp().
-// ─────────────────────────────────────────────
+// ── CHECK LEVEL UP ────────────────────────────────────────────────────────────
+
+// Called every frame from main.js — compares totalKills to the current target
+// If the player has enough kills and we're not already mid-transition, fire doLevelUp()
 export function checkLevelUp(totalKills, scene, npcs, player) {
-    if (levelingUp) return;
+    if (levelingUp) return;             // already leveling up, wait for it to finish
     if (totalKills >= killTarget) {
         doLevelUp(scene, npcs, player);
     }
 }
 
-// ─────────────────────────────────────────────
-// DO LEVEL UP
-// The full sequence that runs when the player hits the kill target:
-//   1. Lock so it can't fire again mid-transition
-//   2. Advance the level counter + recalculate the next kill target
-//   3. Clear every fox currently on the map
-//   4. Restore the player's health to full (reward!)
-//   5. Show the "LEVEL X!" overlay for 1.5 seconds
-//   6. Spawn a fresh starting wave sized for the new level
-//   7. Unlock so normal gameplay resumes
-// ─────────────────────────────────────────────
-function doLevelUp(scene, npcs, player) {
-    levelingUp = true;
+// ── DO LEVEL UP ───────────────────────────────────────────────────────────────
 
-    // Step 2 — advance level and set next kill target
+// Full sequence that runs when the kill target is reached:
+//  1. Lock the guard so it can't fire again mid-transition
+//  2. Advance the level counter and set the next kill target
+//  3. Clear all foxes from the map
+//  4. Restore the player's health to full as a reward
+//  5. Show the "LEVEL X!" overlay for 1.5 seconds
+//  6. Spawn the next wave (boss at level 5, foxes otherwise)
+//  7. Unlock the guard so normal gameplay resumes
+function doLevelUp(scene, npcs, player) {
+    levelingUp = true; // lock — prevents double-trigger
+
+    // Advance the level and calculate the new kill target
     currentLevel++;
     killTarget = getNextKillTarget(currentLevel);
 
-    // Step 3 — remove every fox from the scene and empty the array
-    // We iterate backwards so splicing doesn't skip elements
+    // Remove every fox from the scene and empty the npcs array
+    // Iterate backwards so splicing doesn't skip elements
     for (let i = npcs.length - 1; i >= 0; i--) {
-        scene.remove(npcs[i]);
-        npcs.splice(i, 1);
+        scene.remove(npcs[i]); // remove the 3D mesh from the scene
+        npcs.splice(i, 1);     // remove from the array
     }
 
-    // Step 4 — full health restore as a reward for clearing the level
+    // Reward the player with full health for clearing the level
     heal(100);
 
-    // Step 5 — show the overlay
+    // Show the animated level-up overlay
     showLevelUpOverlay(currentLevel);
 
-    // Step 6 — level 5 is a boss fight; all other levels get a normal wave
+    // Wait 1.5s (overlay duration) then spawn the next wave
     setTimeout(() => {
         if (currentLevel === 5) {
-            createBoss(scene, player);
+            createBoss(scene, player);  // level 5 is a boss fight instead of a fox wave
         } else {
-            const startingFoxes = 2 + currentLevel;
+            const startingFoxes = 2 + currentLevel; // each level starts with more foxes
             createNPCs(startingFoxes, scene, player);
         }
-        // Step 7 — unlock after the overlay has gone away (1.5s)
-        levelingUp = false;
+        levelingUp = false; // unlock — normal gameplay resumes
     }, 1500);
 }
 
-// ─────────────────────────────────────────────
-// KILL TARGET FORMULA
-// Level 1→2: 15 kills,
-// ─────────────────────────────────────────────
+// ── KILL TARGET FORMULA ───────────────────────────────────────────────────────
+
+// Returns how many total kills are needed to reach each level
+// Level 2: 15, Level 3: 40, Level 4: 70, Level 5: 100
+// Beyond level 5: keeps adding 30 each time
 function getNextKillTarget(level) {
-    const targets = [15, 40, 70, 100];
+    const targets = [15, 40, 70, 100]; // preset targets for levels 2–5
     if (level - 1 < targets.length) {
-        return targets[level - 1];
+        return targets[level - 1];     // look up from the array
     }
-    // level 5+: keep adding 30 to whatever the last target was
-    return killTarget + 30;
+    return killTarget + 30;            // level 6+ — extend by 30 each time
 }
 
-// ─────────────────────────────────────────────
-// LEVEL UP OVERLAY
-// Creates a DOM div, animates it in, holds, then removes it.
-// No permanent HTML needed — it's built and destroyed in JS.
-// ─────────────────────────────────────────────
+// ── LEVEL UP OVERLAY ──────────────────────────────────────────────────────────
+
+// Creates a DOM element that shows "LEVEL X!" in the center of the screen
+// Animates in, holds briefly, then fades out and removes itself
+// No permanent HTML required — built and destroyed entirely in JavaScript
 function showLevelUpOverlay(level) {
-    // Inject the CSS keyframes once so we don't duplicate them
+    // Inject the CSS keyframe animations once — skip if already added
     if (!document.getElementById('levelUpStyle')) {
         const style = document.createElement('style');
         style.id = 'levelUpStyle';
@@ -129,6 +125,7 @@ function showLevelUpOverlay(level) {
         document.head.appendChild(style);
     }
 
+    // Build the overlay div and center it on screen
     const overlay = document.createElement('div');
     overlay.style.cssText = `
         position: absolute;
@@ -138,6 +135,7 @@ function showLevelUpOverlay(level) {
         pointer-events: none;
         animation: levelFadeIn 0.3s ease-out forwards;
     `;
+    // Inner HTML — big level number + health restored message
     overlay.innerHTML = `
         <div style="font-size:72px; font-weight:bold; color:white;
                     font-family:Arial; text-shadow: 0 0 20px #ffdd00, 2px 2px 4px black;">
@@ -151,9 +149,9 @@ function showLevelUpOverlay(level) {
 
     document.body.appendChild(overlay);
 
-    // After 1.2s start fading out, then remove from DOM after the fade
+    // After 1.2s start fading out, then remove the element from the DOM after the fade
     setTimeout(() => {
         overlay.style.animation = 'levelFadeOut 0.3s ease-in forwards';
-        setTimeout(() => overlay.remove(), 300);
+        setTimeout(() => overlay.remove(), 300); // remove after fade completes
     }, 1200);
 }

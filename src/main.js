@@ -1,98 +1,238 @@
+// Three.js is the core 3D library — handles scenes, cameras, meshes, lighting
 import * as THREE from "three";
+// OrbitControls lets the player zoom with the scroll wheel
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+// GLTFLoader lets us load .glb model files (the duck player model)
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+// NPC array + functions to create and update foxes/boss each frame
 import { npcs, createNPCs, updateNPCs } from "./npc.js";
+// bullets array + shoot (fires on click) + updateBullets (moves them + checks hits)
 import { bullets, shoot, updateBullets } from "./shoot.js";
-import { updateClock, showFinalTime, showFinalKills, addKill, totalKills, survivalTime } from "./clock.js";
+// Timer and kill counter — updateClock ticks every frame, addKill increments the counter
+import { updateClock, showFinalTime, showFinalKills, addKill, totalKills } from "./clock.js";
+// Player health system — takeDamage, healing, health bar UI, game over callback
 import { takeDamage, updateHealthBar, setDuckMesh, setGameOverCallback } from "./health.js";
+// Popcorn pickups that heal the player when touched
 import { updatePickups, startPickupSpawner } from "./pickup.js";
+// Level progression — checks kill count and triggers level-up when target is hit
 import { checkLevelUp, getCurrentLevel } from "./levels.js";
+// Ultimate ability — charges over time, fires mini ducks on Q press
 import { initUltimate, updateUltimate } from "./ultimate.js";
+
+// ── MULTIPLAYER — WebSocket connection ────────────────────────────────────────
+
+// Connect to the server as soon as the page loads.
+// window.location.hostname works on both localhost and a real domain without changing this line.
+// The server will immediately reply with an 'init' message containing our unique ID.
+const socket = new WebSocket(`ws://${window.location.hostname}:3000`);
+
+// myId stays null until the server tells us who we are.
+// We need it before we can send any labelled messages.
+let myId = null;
+
+// remotePlayers holds a Three.js Group for every OTHER player.
+// Key = their ID string, Value = their Group in the scene.
+// When we get a 'move' message we update that group's position.
+const remotePlayers = {};
+
+// Each remote duck needs its own AnimationMixer to play the
+// waddle clip independently from our own mixer.
+const remotePlayerMixers = {};
+
+// We send our position 20 times per second (every 50 ms).
+// Sending every frame (60/s) would flood the server needlessly.
+const SEND_RATE = 50; // milliseconds
+let lastSendTime = 0;
+
+// ── MULTIPLAYER — Messages arriving FROM the server ───────────────────────────
+
+// onmessage fires every time the server pushes data to us.
+// We read data.type to decide what to do with it.
+socket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+
+    // 'init' — sent once on connect, gives us our permanent ID
+    if (data.type === 'init') {
+        myId = data.id;
+        console.log('Connected! My ID:', myId);
+    }
+
+    // 'playerJoined' — a new browser connected, or the server is catching us up on who is already here.
+    // Either way, create a duck in our scene for that player.
+    if (data.type === 'playerJoined') {
+        spawnRemotePlayer(data.id);
+    }
+
+    // 'playerLeft' — that player closed their tab or lost connection.
+    // Remove their character so we're not left with a ghost.
+    if (data.type === 'playerLeft') {
+        if (remotePlayers[data.id]) {
+            scene.remove(remotePlayers[data.id]);
+            delete remotePlayers[data.id];
+            delete remotePlayerMixers[data.id];
+        }
+    }
+
+    // 'move' — another player moved. data.x/y/z is their new position,
+    // data.ry is their Y rotation so they face the right direction.
+    if (data.type === 'move') {
+        if (remotePlayers[data.id]) {
+            remotePlayers[data.id].position.set(data.x, data.y, data.z);
+            remotePlayers[data.id].rotation.y = data.ry;
+        }
+    }
+};
+
+socket.onopen  = () => console.log('WebSocket connected to server');
+socket.onerror = (e) => console.warn('WebSocket error:', e);
+socket.onclose = () => console.log('Disconnected from server');
+
+// ── MULTIPLAYER — Spawn a visual for a remote player ─────────────────────────
+
+// We clone the duck GLB so they look the same as us.
+// If the model hasn't loaded yet we use a blue fallback box;
+// it gets upgraded automatically once the GLB is ready.
+// We also add a floating nametag so players can tell each other apart.
+let duckTemplateForRemote = null; // set once our own duck loads
+
+function spawnRemotePlayer(id) {
+    const group = new THREE.Group();
+
+    if (duckTemplateForRemote) {
+        // Clone the duck — every remote player gets their own independent copy
+        const remoteDuck = duckTemplateForRemote.clone(true);
+        remoteDuck.scale.set(1.5, 1.5, 1.5);
+        remoteDuck.rotation.y = Math.PI;
+        group.add(remoteDuck);
+
+        // Give the remote duck its own waddle animation
+        if (remoteDuck.animations && remoteDuck.animations.length > 0) {
+            const m = new THREE.AnimationMixer(remoteDuck);
+            m.clipAction(remoteDuck.animations[0]).play();
+            remotePlayerMixers[id] = m;
+        }
+    } else {
+        // Fallback: blue box until the duck model finishes loading
+        const geo = new THREE.BoxGeometry(1.5, 2, 1.5);
+        const mat = new THREE.MeshStandardMaterial({ color: 0x00aaff });
+        group.add(new THREE.Mesh(geo, mat));
+    }
+
+    // Floating nametag drawn onto a canvas then used as a texture
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = 'white';
+    ctx.font = 'bold 20px Arial';
+    ctx.fillText('Player ' + id.substring(0, 4), 4, 24);
+    const texture = new THREE.CanvasTexture(canvas);
+    const labelMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(3, 0.75),
+        new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false })
+    );
+    labelMesh.position.y = 3.5;          // float above the duck
+    labelMesh.rotation.x = -Math.PI / 8; // tilt slightly toward camera
+    group.add(labelMesh);
+
+    scene.add(group);
+    remotePlayers[id] = group;
+}
+
+// ── SCENE ─────────────────────────────────────────────────────────────────────
+
+// The scene is the container for every 3D object — meshes, lights, camera targets
 const scene = new THREE.Scene();
+scene.background = new THREE.Color('skyblue'); // sets the sky/background color
 
-scene.background = new THREE.Color('skyblue');
+// ── CAMERA ────────────────────────────────────────────────────────────────────
 
-// Create a camera
-const fov = 60;
-const aspect = window.innerWidth / window.innerHeight;
-const near = 1;
-const far = 500;
-
+const fov    = 60;                                       // field of view in degrees — how wide the view is
+const aspect = window.innerWidth / window.innerHeight;   // screen width/height ratio
+const near   = 1;                                        // objects closer than this won't render
+const far    = 500;                                      // objects further than this won't render
 const camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
-camera.position.set(0, 20, 12);
-camera.lookAt(0, 0, 0); // point the camera at the center
 
-// Renderer
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-document.body.appendChild(renderer.domElement);
+// ── RENDERER ──────────────────────────────────────────────────────────────────
 
+// WebGLRenderer draws the Three.js scene onto a <canvas> element
+const renderer = new THREE.WebGLRenderer({ antialias: true }); // antialias = smoother edges
+renderer.setSize(window.innerWidth, window.innerHeight);        // fill the whole browser window
+document.body.appendChild(renderer.domElement);                 // add the canvas to the page
+
+// When the browser window is resized, update camera and renderer to match
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
+    camera.updateProjectionMatrix(); // must call this after changing camera properties
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ── PLAYER (duck model) ──────────────────────────────
-// Create a Group so all existing code can reference player.position
-// immediately, even before the GLB finishes loading.
+// ── PLAYER ────────────────────────────────────────────────────────────────────
+
+// A Group is an empty container — it has position/rotation but no visible mesh
+// We use it so player.position works immediately before the GLB model finishes loading
 const player = new THREE.Group();
 scene.add(player);
 
-// We'll start the game loop only after the model is loaded
+// Gate that prevents the game loop from running until the duck model is ready
 let modelLoaded = false;
+// Tracks the timestamp of the last frame — used to calculate delta time
+let lastTime = performance.now();
+
+// Animation mixer and waddle action — set once the GLB loads
 let mixer = null;
 let waddleAction = null;
 
-let lastTime = performance.now();
-
+// Load the duck .glb model asynchronously
 const loader = new GLTFLoader();
 loader.load(
     "/scriptduck.glb",
     (gltf) => {
-        const duck = gltf.scene;
+        const duck = gltf.scene; // gltf.scene is the root object of the loaded model
 
-        // Remove cameras and lights that were exported from Blender
-        // (they conflict with the game's own camera and lighting)
+        // Remove cameras and lights baked into the Blender export
+        // They conflict with the game's own lighting setup
         const toRemove = [];
         duck.traverse((child) => {
-            if (child.isCamera || child.isLight) {
-                toRemove.push(child);
-            }
+            if (child.isCamera || child.isLight) toRemove.push(child);
         });
         toRemove.forEach((obj) => obj.parent.remove(obj));
 
-        // Scale the duck to roughly match the old sphere size
-        // Adjust these values if the duck appears too big or too small
-        duck.scale.set(1.5, 1.5, 1.5);
+        duck.scale.set(1.5, 1.5, 1.5);  // scale the duck to match the game world
+        duck.rotation.y = Math.PI;       // rotate 180° so the duck faces forward
 
-        // Rotate so the duck faces forward (along -Z in game)
-        duck.rotation.y = Math.PI;
+        player.add(duck);           // attach the mesh to the player group
+        setDuckMesh(duck);          // give health.js a reference so it can flash on damage
+        modelLoaded = true;         // unlock the game loop — rendering can begin
 
-        player.add(duck);
-        setDuckMesh(duck); // pass to health.js for flash effect
+        // Cache the duck so spawnRemotePlayer() can clone it for other players.
+        // Also upgrade any blue-box placeholders that were created before this loaded.
+        duckTemplateForRemote = duck;
+        for (const id in remotePlayers) {
+            const existing = remotePlayers[id];
+            // Only upgrade fallback boxes (they have exactly 1 plain Mesh child)
+            if (existing.children.length === 1 && existing.children[0].isMesh) {
+                scene.remove(existing);
+                delete remotePlayers[id];
+                spawnRemotePlayer(id);
+            }
+        }
 
-        // Set up the Waddle animation
+        // Set up the Waddle animation if the GLB includes one
         if (gltf.animations && gltf.animations.length > 0) {
             console.log("🦆 Animations found:", gltf.animations.map(a => a.name));
             mixer = new THREE.AnimationMixer(duck);
             const waddleClip = gltf.animations.find(a => a.name.toLowerCase() === "waddle")
-                ?? gltf.animations[0]; // fallback to first clip
+                ?? gltf.animations[0]; // fallback to first clip if "waddle" isn't found
             if (waddleClip) {
                 waddleAction = mixer.clipAction(waddleClip);
                 waddleAction.play();
                 console.log("✅ Playing animation:", waddleClip.name);
-                console.log("   Duration:", waddleClip.duration);
-                console.log("   Tracks:", waddleClip.tracks.map(t => t.name));
-                const names = [];
-                duck.traverse(o => { if (o.name) names.push(o.name); });
-                console.log("   Scene objects:", names);
             }
         } else {
             console.warn("⚠️ No animations found in duck GLB.");
         }
 
-        modelLoaded = true;
         console.log("✅ Duck model loaded!");
     },
     (progress) => {
@@ -109,32 +249,39 @@ loader.load(
     }
 );
 
-const walls = [];
+// ── WALLS ─────────────────────────────────────────────────────────────────────
+
+const walls = []; // shared array — npc.js and shoot.js both read this for collision
+
 function createWalls(amount) {
     for (let i = 0; i < amount; i++) {
-        const wallGeo = new THREE.BoxGeometry(20, 10, 1);
-        const wallMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        const wallGeo = new THREE.BoxGeometry(20, 10, 1);                    // 20 wide, 10 tall, 1 thick
+        const wallMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 }); // brown color
         const wall = new THREE.Mesh(wallGeo, wallMat);
 
+        // Place the wall at a random position within the play area
         wall.position.set(
-            Math.random() * 70 - 35,
-            4,
-            Math.random() * 70 - 35
+            Math.random() * 70 - 35, // random X between -35 and +35
+            4,                        // Y=4 so the bottom sits near ground level
+            Math.random() * 70 - 35  // random Z between -35 and +35
         );
 
+        // Randomly rotate the wall to face horizontally or vertically
         if (Math.random() < 0.5) {
             wall.rotation.y = 0;           // horizontal wall
         } else {
             wall.rotation.y = Math.PI / 2; // vertical wall (90 degrees)
         }
 
-        // Skip if too close to player's start
+        // Reject this wall if it's too close to the player's starting position
+        // Prevents the player from spawning trapped behind a wall
         if (wall.position.distanceTo(player.position) < 8) {
-            i--;
+            i--; // decrement so the loop retries this slot
             continue;
         }
 
-        // Skip if overlapping any already placed wall
+        // Reject this wall if it overlaps an already-placed wall
+        // Prevents walls from clustering together and blocking huge areas
         let overlapping = false;
         for (let j = 0; j < walls.length; j++) {
             const dist = wall.position.distanceTo(walls[j].position);
@@ -145,134 +292,168 @@ function createWalls(amount) {
         }
 
         if (overlapping) {
-            i--;
+            i--; // retry this slot
             continue;
         }
 
-        scene.add(wall);
-        walls.push(wall);
+        scene.add(wall);   // add to the Three.js scene so it renders
+        walls.push(wall);  // add to the array so collision code can find it
     }
 }
-createWalls(10);
+createWalls(10); // spawn 10 walls at game start
 
-const floorGeometry = new THREE.PlaneGeometry(100, 100);
-const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+// ── FLOOR ─────────────────────────────────────────────────────────────────────
+
+const floorGeometry = new THREE.PlaneGeometry(100, 100);                    // flat 100x100 plane
+const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 }); // green grass color
 const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-floor.rotation.x = -Math.PI / 2; // lay it flat
-floor.position.y = -1;           // push it down below the player
+floor.rotation.x = -Math.PI / 2; // rotate from vertical (default) to flat/horizontal
+floor.position.y = -1;            // push it slightly below the player feet level
 scene.add(floor);
 
-// Grid overlay so you can see movement
+// Grid overlay drawn just above the floor so you can see player/NPC movement
 const grid = new THREE.GridHelper(100, 50, 0x000000, 0x000000);
-grid.position.y = -0.99; // just above the floor to avoid z-fighting
-grid.material.opacity = 0.3;
+grid.position.y = -0.99;          // slightly above the floor to prevent z-fighting (flickering)
+grid.material.opacity = 0.3;      // semi-transparent so it doesn't overpower the green floor
 grid.material.transparent = true;
 scene.add(grid);
 
-// Lights — required for MeshStandardMaterial to show depth
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.4); // soft fill light
+// ── LIGHTING ──────────────────────────────────────────────────────────────────
+
+// MeshStandardMaterial requires light to be visible — without lights everything is black
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.4); // soft fill light from all directions
 scene.add(ambientLight);
-const sunLight = new THREE.DirectionalLight(0xffffff, 1.2); // bright directional light
-sunLight.position.set(5, 10, 7);
+const sunLight = new THREE.DirectionalLight(0xffffff, 1.2); // bright directional light like the sun
+sunLight.position.set(5, 10, 7);                            // position determines shadow angle
 scene.add(sunLight);
 
-//tracks which keys are getting pressed down
+// ── INPUT ─────────────────────────────────────────────────────────────────────
+
+// keys{} tracks which keys are currently held down
+// keydown sets true, keyup sets false — checked every frame in the move logic
 const keys = {};
 window.addEventListener('keydown', (e) => keys[e.key] = true);
-window.addEventListener('keyup', (e) => keys[e.key] = false);
+window.addEventListener('keyup',   (e) => keys[e.key] = false);
 
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enablePan = false;
-controls.enableRotate = false;        // top-down — no orbiting
-controls.enableZoom = true;           // scroll wheel zooms in/out
-controls.minDistance = 10;            // closest zoom
-controls.maxDistance = 80;            // farthest zoom
+// Left mouse click fires a bullet toward the mouse cursor position
 window.addEventListener('mousedown', (e) => {
-    if (e.button === 0) { // left click only
-        shoot(e, camera, player, scene); // passing player instead of sphere
+    if (e.button === 0) { // 0 = left button, ignore right-click and middle-click
+        shoot(e, camera, player, scene);
     }
 });
 
-// top-down camera — directly above the player
+// ── CAMERA SETUP ──────────────────────────────────────────────────────────────
+
+// Top-down view — camera sits directly above the origin looking straight down
 camera.position.set(0, 40, 0);
 camera.lookAt(0, 0, 0);
 
-createNPCs(3, scene, player);
-startPickupSpawner(scene, walls);
-initUltimate(scene, player, npcs);
-// function getSpawnAmount() {
-//     const minute = Math.floor(survivalTime / 60);
-//     return 2 * Math.pow(2, minute);
-// }
-//this would be needed only if we want the spawn rate to be based on time and kills.
+// OrbitControls — only zoom is enabled, no rotation or panning
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enablePan    = false;
+controls.enableRotate = false; // top-down — no orbiting
+controls.enableZoom   = true;  // scroll wheel zooms in/out
+controls.minDistance  = 10;    // closest zoom
+controls.maxDistance  = 80;    // farthest zoom
 
+// ── GAME INIT ─────────────────────────────────────────────────────────────────
+
+createNPCs(3, scene, player);        // spawn 3 foxes to start the game
+startPickupSpawner(scene, walls);    // begin the popcorn pickup spawn loop
+initUltimate(scene, player, npcs);   // set up the Q ultimate ability
 
 let gameOver = false;
 
+// Called by health.js when player HP reaches 0
+// Stops the game loop and shows the game over screen
 function triggerGameOver() {
     gameOver = true;
-    showFinalTime();
-    showFinalKills();
+    showFinalTime();  // display how long the player survived
+    showFinalKills(); // display final kill count
     document.getElementById('gameOver').style.display = 'flex';
 }
-setGameOverCallback(triggerGameOver);
+setGameOverCallback(triggerGameOver); // register so health.js can call it
 
+// ── GAME LOOP ─────────────────────────────────────────────────────────────────
 
-
-//it helps to draw on a loop
+// animate() is called ~60 times per second via requestAnimationFrame
+// Everything that moves or changes each frame is updated here
 function animate() {
-    requestAnimationFrame(animate);
-    if (gameOver) return; // stops everything when dead
-    if (!modelLoaded) return; // wait for duck model to load
+    requestAnimationFrame(animate); // schedules the next frame
+    if (gameOver) return;           // stop updating everything once the game ends
+    if (!modelLoaded) return;       // don't start until the duck model has loaded
 
+    // delta = seconds since the last frame (usually ~0.016 at 60fps)
+    // Used for timers so they run at the same speed regardless of frame rate
     const now = performance.now();
     const delta = (now - lastTime) / 1000;
     lastTime = now;
 
-    updateClock();
+    updateClock(); // tick the survival timer and update its DOM element
+
+    // Advance the player's waddle animation
+    if (mixer) mixer.update(delta);
+
+    // Advance each remote player's waddle animation independently
+    for (const id in remotePlayerMixers) {
+        remotePlayerMixers[id].update(delta);
+    }
+
+    // Save player position before movement — used to revert if a wall is hit
     const previousPosition = player.position.clone();
 
+    // Get the direction the camera is facing (flattened to the ground plane)
+    // This makes WASD move relative to the camera angle, not world axes
     const cameraDirection = new THREE.Vector3();
     camera.getWorldDirection(cameraDirection);
-    cameraDirection.y = 0;
-    cameraDirection.normalize();
+    cameraDirection.y = 0;          // ignore any vertical tilt
+    cameraDirection.normalize();    // make length 1 so speed is consistent
 
+    // Right vector is perpendicular to the camera direction — used for A/D strafing
     const cameraRight = new THREE.Vector3();
     cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0)).normalize();
 
-    const speed = 0.18;
-    const moveDir = new THREE.Vector3();
-    if (keys['w'] || keys['W']) moveDir.addScaledVector(cameraDirection, 1);
-    if (keys['s'] || keys['S']) moveDir.addScaledVector(cameraDirection, -1);
-    if (keys['a'] || keys['A']) moveDir.addScaledVector(cameraRight, -1);
-    if (keys['d'] || keys['D']) moveDir.addScaledVector(cameraRight, 1);
+    // ── PLAYER MOVEMENT ───────────────────────────────────────────────────────
 
-    const isMoving = moveDir.lengthSq() > 0;
+    const speed = 0.18; // units per frame the player moves
+    const moveDir = new THREE.Vector3();
+
+    // Accumulate movement direction based on which keys are held
+    if (keys['w'] || keys['W']) moveDir.addScaledVector(cameraDirection, 1);   // forward
+    if (keys['s'] || keys['S']) moveDir.addScaledVector(cameraDirection, -1);  // backward
+    if (keys['a'] || keys['A']) moveDir.addScaledVector(cameraRight, -1);      // strafe left
+    if (keys['d'] || keys['D']) moveDir.addScaledVector(cameraRight, 1);       // strafe right
+
+    const isMoving = moveDir.lengthSq() > 0; // lengthSq is cheaper than length (no sqrt)
     if (isMoving) {
-        moveDir.normalize();
+        moveDir.normalize(); // normalize so diagonal movement isn't faster than straight
         player.position.addScaledVector(moveDir, speed);
-        // rotate duck to face movement direction (+ Math.PI compensates for the model's built-in flip)
+        // face the duck in the direction of movement
+        // Math.PI compensates for the model being exported facing the wrong way
         player.rotation.y = Math.atan2(moveDir.x, moveDir.z);
     }
 
-    if (mixer) mixer.update(delta);
+    // ── PLAYER WALL COLLISION ─────────────────────────────────────────────────
 
-    // wall collision — use a manual bounding box for the player group
+    // Build a bounding box around the player's current position
     const playerBox = new THREE.Box3().setFromCenterAndSize(
         player.position,
-        new THREE.Vector3(1.5, 2, 1.5) // approximate duck hitbox
+        new THREE.Vector3(1.5, 2, 1.5) // approximate size of the duck model
     );
+    // If the player overlaps any wall, snap back to where they were before moving
     for (let i = 0; i < walls.length; i++) {
         const wallBox = new THREE.Box3().setFromObject(walls[i]);
         if (playerBox.intersectsBox(wallBox)) {
-            player.position.copy(previousPosition);
-            break;
+            player.position.copy(previousPosition); // revert the move
+            break; // only need to revert once
         }
     }
 
-    if
-        (player.position.x > 50 || player.position.x < -50 || player.position.z > 50 || player.position.z < -50) {
+    // ── BOUNDARY CHECK ────────────────────────────────────────────────────────
+
+    // The playable area is ±50 units — falling off the edge triggers game over
+    if (player.position.x > 50 || player.position.x < -50 ||
+        player.position.z > 50 || player.position.z < -50) {
         gameOver = true;
         showFinalTime();
         showFinalKills();
@@ -280,42 +461,86 @@ function animate() {
         return; // stop the rest of this frame immediately
     }
 
-    // update NPCs
-    updateNPCs(npcs, player, playerBox, walls);
+    // ── NPC UPDATE ────────────────────────────────────────────────────────────
 
-    // check if any NPC touched the player
+    // Move all foxes and the boss toward the player, handle boss timers
+    // delta and scene are required for the boss's shoot/spawn timers
+    updateNPCs(npcs, player, playerBox, walls, delta, scene);
+
+    // Check if any NPC is touching the player — deals contact damage
     for (let i = 0; i < npcs.length; i++) {
         const npcBox = new THREE.Box3().setFromObject(npcs[i]);
         if (npcBox.intersectsBox(playerBox)) {
-            takeDamage(20);
-            break; // only one hit per frame
+            takeDamage(20); // 20 damage per contact hit
+            break;          // only one NPC can hit per frame to avoid instant death
         }
     }
-    if (gameOver) return;
-    // update popcorn pickups
+    if (gameOver) return; // health.js may have triggered game over via takeDamage
+
+    // ── PICKUPS ───────────────────────────────────────────────────────────────
+
+    // Animate popcorn bobbing and check if the player walked over one
     updatePickups(scene, player);
 
-    updateHealthBar();
-    updateUltimate(delta);
+    // ── HUD UPDATES ───────────────────────────────────────────────────────────
 
-    const SPAWN_PER_KILL = 2;
+    updateHealthBar();       // sync the health bar width to current HP
+    updateUltimate(delta);   // charge the ultimate and move any active mini ducks
+
+    // ── BULLETS ───────────────────────────────────────────────────────────────
+
+    const SPAWN_PER_KILL = 2; // how many new foxes spawn when a fox is killed
+    // Move all bullets forward and check if they hit a wall or NPC
+    // Returns how many NPCs were killed this frame
     const killsThisFrame = updateBullets(bullets, npcs, walls, scene);
     if (killsThisFrame > 0) {
         for (let k = 0; k < killsThisFrame; k++) {
-            addKill();
+            addKill(); // increment the kill counter and update the HUD
         }
-        createNPCs(SPAWN_PER_KILL * killsThisFrame, scene, player);
+        createNPCs(SPAWN_PER_KILL * killsThisFrame, scene, player); // spawn replacement foxes
     }
 
-    // check if the player has hit the kill target for the current level
+    // Check if any boss bullet has hit the player
+    // Enemy bullets are flagged with isEnemyBullet = true in shoot.js
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        if (!bullets[i].mesh.userData.isEnemyBullet) continue; // skip player's own bullets
+        const bBox = new THREE.Box3().setFromObject(bullets[i].mesh);
+        if (bBox.intersectsBox(playerBox)) {
+            takeDamage(40);                  // boss bullets deal 40 damage
+            scene.remove(bullets[i].mesh);  // remove the bullet mesh from the scene
+            bullets.splice(i, 1);           // remove it from the bullets array
+        }
+    }
+
+    // ── LEVEL UP CHECK ────────────────────────────────────────────────────────
+
+    // Compare total kills against the current level's target — triggers level-up if met
     checkLevelUp(totalKills, scene, npcs, player);
     document.getElementById('level').textContent = `Level ${getCurrentLevel()}`;
 
-    // top-down camera follows player
+    // ── MULTIPLAYER — Send our position to the server ─────────────────────────
+
+    // Throttle to SEND_RATE ms so we don't flood the server.
+    // Three checks: myId (server confirmed us), readyState 1 (socket open), time elapsed.
+    if (myId && socket.readyState === 1 && now - lastSendTime > SEND_RATE) {
+        lastSendTime = now;
+        socket.send(JSON.stringify({
+            type: 'move',
+            x:  player.position.x,
+            y:  player.position.y,
+            z:  player.position.z,
+            ry: player.rotation.y  // y-axis rotation so remote players face the right way
+        }));
+    }
+
+    // ── CAMERA FOLLOW ─────────────────────────────────────────────────────────
+
+    // Lock the camera above the player so it scrolls with them
+    // Y stays fixed at 40 units above (set during setup)
     camera.position.x = player.position.x;
     camera.position.z = player.position.z;
-    controls.target.copy(player.position);
+    controls.target.copy(player.position); // keep OrbitControls centered on player
     controls.update();
     renderer.render(scene, camera);
 }
-animate();
+animate(); // kick off the game loop
