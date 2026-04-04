@@ -82,7 +82,7 @@ function doLevelUp(scene, npcs, player) {
         if (currentLevel === 5) {
             createBoss(scene, player);  // level 5 is a boss fight instead of a fox wave
         } else {
-            const startingFoxes = 2 + currentLevel; // each level starts with more foxes
+            const startingFoxes = Math.min(2 + currentLevel, 20); // each level starts with more foxes, capped at 20
             createNPCs(startingFoxes, scene, player);
         }
         levelingUp = false; // unlock — normal gameplay resumes

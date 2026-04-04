@@ -5,9 +5,9 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 // GLTFLoader lets us load .glb model files (the duck player model)
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 // NPC array + functions to create and update foxes/boss each frame
-import { npcs, createNPCs, updateNPCs } from "./npc.js";
+import { npcs, createNPCs, updateNPCs, foxTemplate } from "./npc.js";
 // bullets array + shoot (fires on click) + updateBullets (moves them + checks hits)
-import { bullets, shoot, updateBullets } from "./shoot.js";
+import { bullets, shoot, updateBullets, spawnRemoteBullet } from "./shoot.js";
 // Timer and kill counter — updateClock ticks every frame, addKill increments the counter
 import { updateClock, showFinalTime, showFinalKills, addKill, totalKills } from "./clock.js";
 // Player health system — takeDamage, healing, health bar UI, game over callback
@@ -21,19 +21,21 @@ import { initUltimate, updateUltimate } from "./ultimate.js";
 
 // ── MULTIPLAYER — WebSocket connection ────────────────────────────────────────
 
-// Connect to the server as soon as the page loads.
-// window.location.hostname works on both localhost and a real domain without changing this line.
-// The server will immediately reply with an 'init' message containing our unique ID.
-const socket = new WebSocket(`ws://${window.location.hostname}:3000`);
-
-// myId stays null until the server tells us who we are.
-// We need it before we can send any labelled messages.
+// isMultiplayer is set by the menu button — false = solo, true = Play Together
+let isMultiplayer = false;
+// socket is only created when the player picks Play Together
+let socket = null;
+// myId stays null until the server tells us who we are
 let myId = null;
 
 // remotePlayers holds a Three.js Group for every OTHER player.
 // Key = their ID string, Value = their Group in the scene.
-// When we get a 'move' message we update that group's position.
 const remotePlayers = {};
+
+// serverNpcMeshes holds a Three.js mesh for each NPC the server is tracking.
+// Key = server NPC id (number), Value = Three.js mesh in the scene.
+// Created/removed dynamically as the server adds or removes NPCs.
+const serverNpcMeshes = {};
 
 // Each remote duck needs its own AnimationMixer to play the
 // waddle clip independently from our own mixer.
@@ -44,48 +46,69 @@ const remotePlayerMixers = {};
 const SEND_RATE = 50; // milliseconds
 let lastSendTime = 0;
 
-// ── MULTIPLAYER — Messages arriving FROM the server ───────────────────────────
+// Opens the WebSocket and sets up all message handlers.
+// Only called when the player picks Play Together.
+function connectToServer() {
+    socket = new WebSocket(`wss://game-production-9138.up.railway.app`);
 
-// onmessage fires every time the server pushes data to us.
-// We read data.type to decide what to do with it.
-socket.onmessage = (event) => {
-    const data = JSON.parse(event.data);
+    socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
 
-    // 'init' — sent once on connect, gives us our permanent ID
-    if (data.type === 'init') {
-        myId = data.id;
-        console.log('Connected! My ID:', myId);
-    }
-
-    // 'playerJoined' — a new browser connected, or the server is catching us up on who is already here.
-    // Either way, create a duck in our scene for that player.
-    if (data.type === 'playerJoined') {
-        spawnRemotePlayer(data.id);
-    }
-
-    // 'playerLeft' — that player closed their tab or lost connection.
-    // Remove their character so we're not left with a ghost.
-    if (data.type === 'playerLeft') {
-        if (remotePlayers[data.id]) {
-            scene.remove(remotePlayers[data.id]);
-            delete remotePlayers[data.id];
-            delete remotePlayerMixers[data.id];
+        // 'init' — sent once on connect, gives us our permanent ID
+        if (data.type === 'init') {
+            myId = data.id;
+            console.log('Connected! My ID:', myId);
         }
-    }
 
-    // 'move' — another player moved. data.x/y/z is their new position,
-    // data.ry is their Y rotation so they face the right direction.
-    if (data.type === 'move') {
-        if (remotePlayers[data.id]) {
-            remotePlayers[data.id].position.set(data.x, data.y, data.z);
-            remotePlayers[data.id].rotation.y = data.ry;
+        // 'playerJoined' — a new browser connected, create a duck for them
+        if (data.type === 'playerJoined') {
+            spawnRemotePlayer(data.id);
         }
-    }
-};
 
-socket.onopen  = () => console.log('WebSocket connected to server');
-socket.onerror = (e) => console.warn('WebSocket error:', e);
-socket.onclose = () => console.log('Disconnected from server');
+        // 'playerLeft' — remove their character from our scene
+        if (data.type === 'playerLeft') {
+            if (remotePlayers[data.id]) {
+                scene.remove(remotePlayers[data.id]);
+                delete remotePlayers[data.id];
+                delete remotePlayerMixers[data.id];
+            }
+        }
+
+        // 'move' — another player moved, update their duck position
+        if (data.type === 'move') {
+            if (remotePlayers[data.id]) {
+                remotePlayers[data.id].position.set(data.x, data.y, data.z);
+                remotePlayers[data.id].rotation.y = data.ry;
+            }
+        }
+
+        // 'shoot' — another player fired, spawn a bullet traveling in their direction
+        if (data.type === 'shoot') {
+            spawnRemoteBullet(data.x, data.z, data.dirX, data.dirZ, scene);
+        }
+
+        // 'npcState' — server sends NPC positions, move existing fox meshes to match
+        if (data.type === 'npcState') {
+            for (let i = 0; i < data.npcs.length && i < npcs.length; i++) {
+                npcs[i].userData.serverId = data.npcs[i].id; // store server ID so we can reference it on kill
+                npcs[i].position.set(data.npcs[i].x, 0, data.npcs[i].z);
+            }
+        }
+
+        // 'kill' — another player killed a fox, remove it from our scene
+        if (data.type === 'kill') {
+            const idx = npcs.findIndex(n => n.userData.serverId === data.npcId);
+            if (idx !== -1) {
+                scene.remove(npcs[idx]);
+                npcs.splice(idx, 1);
+            }
+        }
+    };
+
+    socket.onopen = () => console.log('WebSocket connected to server');
+    socket.onerror = (e) => console.warn('WebSocket error:', e);
+    socket.onclose = () => console.log('Disconnected from server');
+}
 
 // ── MULTIPLAYER — Spawn a visual for a remote player ─────────────────────────
 
@@ -147,10 +170,10 @@ scene.background = new THREE.Color('skyblue'); // sets the sky/background color
 
 // ── CAMERA ────────────────────────────────────────────────────────────────────
 
-const fov    = 60;                                       // field of view in degrees — how wide the view is
+const fov = 60;                                       // field of view in degrees — how wide the view is
 const aspect = window.innerWidth / window.innerHeight;   // screen width/height ratio
-const near   = 1;                                        // objects closer than this won't render
-const far    = 500;                                      // objects further than this won't render
+const near = 1;                                        // objects closer than this won't render
+const far = 500;                                      // objects further than this won't render
 const camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
 
 // ── RENDERER ──────────────────────────────────────────────────────────────────
@@ -333,12 +356,16 @@ scene.add(sunLight);
 // keydown sets true, keyup sets false — checked every frame in the move logic
 const keys = {};
 window.addEventListener('keydown', (e) => keys[e.key] = true);
-window.addEventListener('keyup',   (e) => keys[e.key] = false);
+window.addEventListener('keyup', (e) => keys[e.key] = false);
 
 // Left mouse click fires a bullet toward the mouse cursor position
 window.addEventListener('mousedown', (e) => {
     if (e.button === 0) { // 0 = left button, ignore right-click and middle-click
-        shoot(e, camera, player, scene);
+        const shotData = shoot(e, camera, player, scene);
+        // In multiplayer, tell the server we fired so other players can see the bullet
+        if (isMultiplayer && socket && socket.readyState === 1 && shotData) {
+            socket.send(JSON.stringify({ type: 'shoot', ...shotData }));
+        }
     }
 });
 
@@ -350,17 +377,34 @@ camera.lookAt(0, 0, 0);
 
 // OrbitControls — only zoom is enabled, no rotation or panning
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.enablePan    = false;
+controls.enablePan = false;
 controls.enableRotate = false; // top-down — no orbiting
-controls.enableZoom   = true;  // scroll wheel zooms in/out
-controls.minDistance  = 10;    // closest zoom
-controls.maxDistance  = 80;    // farthest zoom
+controls.enableZoom = true;  // scroll wheel zooms in/out
+controls.minDistance = 10;    // closest zoom
+controls.maxDistance = 80;    // farthest zoom
 
 // ── GAME INIT ─────────────────────────────────────────────────────────────────
 
-createNPCs(3, scene, player);        // spawn 3 foxes to start the game
-startPickupSpawner(scene, walls);    // begin the popcorn pickup spawn loop
-initUltimate(scene, player, npcs);   // set up the Q ultimate ability
+function startGame() {
+    document.getElementById('mainMenu').style.display = 'none';
+    createNPCs(3, scene, player);       // spawn 3 foxes to start the game
+    startPickupSpawner(scene, walls);   // begin the popcorn pickup spawn loop
+    initUltimate(scene, player, npcs);  // set up the Q ultimate ability
+    animate();                          // kick off the game loop
+}
+
+// Solo button — no server, local AI runs as normal
+document.getElementById('soloBtn').addEventListener('click', () => {
+    isMultiplayer = false;
+    startGame();
+});
+
+// Play Together button — connect to server, server will drive NPCs
+document.getElementById('multiBtn').addEventListener('click', () => {
+    isMultiplayer = true;
+    connectToServer();
+    startGame();
+});
 
 let gameOver = false;
 
@@ -464,8 +508,10 @@ function animate() {
     // ── NPC UPDATE ────────────────────────────────────────────────────────────
 
     // Move all foxes and the boss toward the player, handle boss timers
-    // delta and scene are required for the boss's shoot/spawn timers
-    updateNPCs(npcs, player, playerBox, walls, delta, scene);
+    // Only runs in solo — in multiplayer the server moves NPCs and sends positions
+    if (!isMultiplayer) {
+        updateNPCs(npcs, player, playerBox, walls, delta, scene);
+    }
 
     // Check if any NPC is touching the player — deals contact damage
     for (let i = 0; i < npcs.length; i++) {
@@ -490,6 +536,9 @@ function animate() {
     // ── BULLETS ───────────────────────────────────────────────────────────────
 
     const SPAWN_PER_KILL = 2; // how many new foxes spawn when a fox is killed
+    const MAX_FOXES = 20;     // hard cap — never more than 20 NPCs on screen at once
+    // Snapshot server IDs before updateBullets so we can detect which foxes were killed
+    const npcIdsBefore = npcs.map(n => n.userData.serverId);
     // Move all bullets forward and check if they hit a wall or NPC
     // Returns how many NPCs were killed this frame
     const killsThisFrame = updateBullets(bullets, npcs, walls, scene);
@@ -497,7 +546,20 @@ function animate() {
         for (let k = 0; k < killsThisFrame; k++) {
             addKill(); // increment the kill counter and update the HUD
         }
-        createNPCs(SPAWN_PER_KILL * killsThisFrame, scene, player); // spawn replacement foxes
+        // Only spawn if under the cap — prevents lag from too many foxes
+        const canSpawn = Math.max(0, MAX_FOXES - npcs.length);
+        const toSpawn = Math.min(SPAWN_PER_KILL * killsThisFrame, canSpawn);
+        if (toSpawn > 0) createNPCs(toSpawn, scene, player);
+
+        // In multiplayer, tell the server which foxes were killed so it removes them for everyone
+        if (isMultiplayer && socket && socket.readyState === 1) {
+            const npcIdsAfter = new Set(npcs.map(n => n.userData.serverId));
+            for (const npcId of npcIdsBefore) {
+                if (npcId !== undefined && !npcIdsAfter.has(npcId)) {
+                    socket.send(JSON.stringify({ type: 'kill', npcId }));
+                }
+            }
+        }
     }
 
     // Check if any boss bullet has hit the player
@@ -522,13 +584,13 @@ function animate() {
 
     // Throttle to SEND_RATE ms so we don't flood the server.
     // Three checks: myId (server confirmed us), readyState 1 (socket open), time elapsed.
-    if (myId && socket.readyState === 1 && now - lastSendTime > SEND_RATE) {
+    if (isMultiplayer && socket && myId && socket.readyState === 1 && now - lastSendTime > SEND_RATE) {
         lastSendTime = now;
         socket.send(JSON.stringify({
             type: 'move',
-            x:  player.position.x,
-            y:  player.position.y,
-            z:  player.position.z,
+            x: player.position.x,
+            y: player.position.y,
+            z: player.position.z,
             ry: player.rotation.y  // y-axis rotation so remote players face the right way
         }));
     }
@@ -543,4 +605,3 @@ function animate() {
     controls.update();
     renderer.render(scene, camera);
 }
-animate(); // kick off the game loop

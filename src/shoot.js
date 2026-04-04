@@ -78,6 +78,19 @@ export function shoot(event, camera, player, scene) {
 
     scene.add(bullet);
     bullets.push({ mesh: bullet, dir: direction }); // store mesh + direction for updateBullets
+
+    // Return direction so main.js can relay the shot to the server in multiplayer
+    return { x: player.position.x, z: player.position.z, dirX: direction.x, dirZ: direction.z };
+}
+
+// Spawns a bullet fired by a remote player — called when we receive a 'shoot' message
+export function spawnRemoteBullet(x, z, dirX, dirZ, scene) {
+    const dir = new THREE.Vector3(dirX, 0, dirZ).normalize();
+    const bullet = makeBulletMesh();
+    bullet.position.set(x, 0, z);
+    bullet.rotation.y = Math.atan2(dirX, dirZ);
+    scene.add(bullet);
+    bullets.push({ mesh: bullet, dir });
 }
 
 // ── UPDATE BULLETS ────────────────────────────────────────────────────────────
