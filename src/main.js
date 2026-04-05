@@ -5,12 +5,12 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 // GLTFLoader lets us load .glb model files (the duck player model)
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 // NPC array + functions to create and update foxes/boss each frame
-import { npcs, createNPCs, updateNPCs } from "./npc.js";
+import { npcs, createNPCs, updateNPCs, createBoss } from "./npc.js";
 // bullets array + shoot (fires on click) + updateBullets (moves them + checks hits)
 import { bullets, shoot, updateBullets, spawnRemoteBullet } from "./shoot.js";
 // Timer and kill counter — updateClock ticks every frame, addKill increments the counter
 // setKills lets the NPC follower sync their kill count to match the NPC host
-import { updateClock, showFinalTime, showFinalKills, addKill, totalKills, setKills } from "./clock.js";
+import { updateClock, showFinalTime, showFinalKills, addKill, totalKills, survivalTime, setKills } from "./clock.js";
 // Player health system — takeDamage, healing, health bar UI, game over callback
 import { takeDamage, updateHealthBar, setDuckMesh, setGameOverCallback } from "./health.js";
 // Popcorn pickups that heal the player when touched
@@ -28,6 +28,14 @@ let isMultiplayer = false;
 let socket = null;
 // myId stays null until the server tells us who we are
 let myId = null;
+// isHost — true if this player created the room
+let isHost = false;
+// roomPlayers — list of player IDs in the waiting room
+const roomPlayers = [];
+
+// spectating — true when local player is dead but others are still alive
+let spectating = false;
+let spectateTargetId = null;
 
 // remotePlayers holds a Three.js Group for every OTHER player.
 // Key = their ID string, Value = their Group in the scene.
@@ -56,8 +64,10 @@ function connectToServer() {
             console.log('Connected! My ID:', myId);
         }
 
-        // 'playerJoined' — a new browser connected, create a duck for them
+        // 'playerJoined' — a new player joined the room
         if (data.type === 'playerJoined') {
+            roomPlayers.push(data.id);
+            updateWaitingRoom();
             spawnRemotePlayer(data.id);
         }
 
@@ -67,6 +77,14 @@ function connectToServer() {
                 scene.remove(remotePlayers[data.id]);
                 delete remotePlayers[data.id];
                 delete remotePlayerMixers[data.id];
+            }
+            // If we were spectating this player, switch to any remaining player
+            if (spectating && spectateTargetId === data.id) {
+                const ids = Object.keys(remotePlayers);
+                spectateTargetId = ids.length > 0 ? ids[0] : null;
+                document.getElementById('spectateLabel').textContent = spectateTargetId
+                    ? 'Player ' + spectateTargetId.substring(0, 4)
+                    : 'No players alive';
             }
         }
 
@@ -116,22 +134,75 @@ function connectToServer() {
             }
         }
 
-        // 'roomCreated' — server confirmed room creation, show code and start game
+        // 'roomCreated' — server confirmed room, show waiting room as host
         if (data.type === 'roomCreated') {
+            isHost = true;
+            roomPlayers.push(myId);
+            document.getElementById('mainMenu').style.display = 'none';
+            document.getElementById('waitingRoom').style.display = 'flex';
             document.getElementById('roomCodeDisplay').textContent = 'Room Code: ' + data.code;
-            document.getElementById('roomCodeDisplay').style.display = 'block';
-            startGame();
+            document.getElementById('startBtn').style.display = 'block';
+            document.getElementById('waitingMsg').style.display = 'none';
+            updateWaitingRoom();
         }
 
-        // 'joinSuccess' — code was valid, join the room and start game
+        // 'joinSuccess' — code was valid, show waiting room as non-host
         if (data.type === 'joinSuccess') {
+            isHost = false;
+            // Add everyone already in the room, then ourselves
+            for (const pid of data.existingPlayers) roomPlayers.push(pid);
+            roomPlayers.push(myId);
+            document.getElementById('mainMenu').style.display = 'none';
+            document.getElementById('waitingRoom').style.display = 'flex';
+            document.getElementById('roomCodeDisplay').textContent = 'Room Code: ' + data.code;
+            updateWaitingRoom();
+        }
+
+        // 'joinFailed' — wrong code, show error
+        if (data.type === 'joinFailed') {
+            document.getElementById('joinError').textContent = data.reason || 'Room not found. Check the code and try again.';
+            document.getElementById('joinError').style.display = 'block';
+        }
+
+        // 'gameStart' — host pressed Start, everyone begins
+        if (data.type === 'gameStart') {
+            document.getElementById('waitingRoom').style.display = 'none';
             startGame();
         }
 
-        // 'joinFailed' — code was wrong, show error message
-        if (data.type === 'joinFailed') {
-            document.getElementById('joinError').textContent = 'Room not found. Check the code and try again.';
-            document.getElementById('joinError').style.display = 'block';
+        // 'leaderboard' — all players died, show results table
+        if (data.type === 'leaderboard') {
+            spectating = false;
+            spectateTargetId = null;
+            document.getElementById('spectateOverlay').style.display = 'none';
+            const tbody = document.getElementById('leaderboardBody');
+            tbody.innerHTML = '';
+            data.results.forEach((r, i) => {
+                const row = document.createElement('tr');
+                row.style.cssText = r.id === myId
+                    ? 'color:#ffdd00; font-weight:bold;'
+                    : 'color:white;';
+                row.innerHTML = `
+                    <td style="padding:10px;">${i + 1}</td>
+                    <td style="padding:10px;">Player ${r.id.substring(0, 4)}${r.id === myId ? ' (you)' : ''}</td>
+                    <td style="padding:10px;">${r.kills}</td>
+                    <td style="padding:10px;">${r.time}s</td>
+                `;
+                tbody.appendChild(row);
+            });
+            document.getElementById('leaderboard').style.display = 'flex';
+            document.getElementById('restartWaiting').style.display = 'block';
+            document.getElementById('restartWaiting').textContent = '0 / ' + data.results.length + ' want to play again';
+        }
+
+        // 'restartVote' — someone pressed Start Again, show progress
+        if (data.type === 'restartVote') {
+            document.getElementById('restartWaiting').textContent = data.votes + ' / ' + data.total + ' want to play again';
+        }
+
+        // 'restartGame' — all players voted, reload to restart fresh
+        if (data.type === 'restartGame') {
+            window.location.reload();
         }
     };
 
@@ -159,11 +230,13 @@ function spawnRemotePlayer(id) {
             remotePlayerMixers[id] = m;
         }
     } else {
+        // Fallback: blue box until the duck model finishes loading
         const geo = new THREE.BoxGeometry(1.5, 2, 1.5);
         const mat = new THREE.MeshStandardMaterial({ color: 0x00aaff });
         group.add(new THREE.Mesh(geo, mat));
     }
 
+    // Floating nametag drawn onto a canvas then used as a texture
     const canvas = document.createElement('canvas');
     canvas.width = 128;
     canvas.height = 32;
@@ -355,7 +428,6 @@ window.addEventListener('keyup',   (e) => keys[e.key] = false);
 window.addEventListener('mousedown', (e) => {
     if (e.button === 0) {
         const shotData = shoot(e, camera, player, scene);
-        // In multiplayer, tell the server we fired so other players can see the bullet
         if (isMultiplayer && socket && socket.readyState === 1 && shotData) {
             socket.send(JSON.stringify({ type: 'shoot', ...shotData }));
         }
@@ -376,9 +448,28 @@ controls.maxDistance  = 80;
 
 // ── GAME INIT ─────────────────────────────────────────────────────────────────
 
+// Updates the player list shown in the waiting room
+function updateWaitingRoom() {
+    const list = document.getElementById('waitingPlayerList');
+    list.innerHTML = '';
+    roomPlayers.forEach((pid, i) => {
+        const entry = document.createElement('div');
+        entry.style.cssText = 'background:rgba(255,255,255,0.1); border-radius:6px; padding:10px 16px; color:white; font-size:16px;';
+        entry.textContent = (i === 0 ? 'Host' : 'Player ' + (i + 1)) + ' — ' + pid.substring(0, 6);
+        list.appendChild(entry);
+    });
+}
+
+// Start Game button — host only, tells server to begin for everyone
+document.getElementById('startBtn').addEventListener('click', () => {
+    if (socket && socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: 'startGame' }));
+    }
+});
+
 function startGame() {
     document.getElementById('mainMenu').style.display = 'none';
-    // Solo: spawn initial NPCs locally. Multiplayer: server owns the NPCs.
+    document.getElementById('waitingRoom').style.display = 'none';
     if (!isMultiplayer) createNPCs(3, scene, player);
     startPickupSpawner(scene, walls);
     initUltimate(scene, player, npcs);
@@ -400,7 +491,7 @@ document.getElementById('multiBtn').addEventListener('click', () => {
     document.getElementById('multiBtn').style.display = 'none';
 });
 
-// Create Room button — server will reply with roomCreated → startGame()
+// Create Room button — server will reply with roomCreated
 document.getElementById('createBtn').addEventListener('click', () => {
     if (socket && socket.readyState === 1) {
         socket.send(JSON.stringify({ type: 'createRoom' }));
@@ -417,32 +508,74 @@ document.getElementById('joinBtn').addEventListener('click', () => {
 
 let gameOver = false;
 
+// Called by health.js when player HP reaches 0
 function triggerGameOver() {
     gameOver = true;
     showFinalTime();
     showFinalKills();
-    document.getElementById('gameOver').style.display = 'flex';
+    if (isMultiplayer && socket && socket.readyState === 1) {
+        // Tell server we died — it collects stats and broadcasts leaderboard when everyone is dead
+        socket.send(JSON.stringify({
+            type: 'playerDied',
+            kills: totalKills,
+            time: Math.floor(survivalTime)
+        }));
+        // Switch to spectate mode — follow a surviving player
+        spectating = true;
+        const ids = Object.keys(remotePlayers);
+        spectateTargetId = ids.length > 0 ? ids[0] : null;
+        const overlay = document.getElementById('spectateOverlay');
+        overlay.style.display = 'flex';
+        document.getElementById('spectateLabel').textContent = spectateTargetId
+            ? 'Player ' + spectateTargetId.substring(0, 4)
+            : 'No players alive';
+        document.getElementById('spectateStats').textContent =
+            `Your score: ${totalKills} kills — ${Math.floor(survivalTime)}s`;
+    } else {
+        // Solo game over — show the normal game over screen
+        document.getElementById('gameOver').style.display = 'flex';
+    }
 }
 setGameOverCallback(triggerGameOver);
+
+// Start Again button — votes to restart; server triggers reload when all players vote
+document.getElementById('restartBtn').addEventListener('click', () => {
+    if (socket && socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: 'requestRestart' }));
+        document.getElementById('restartBtn').disabled = true;
+        document.getElementById('restartBtn').textContent = 'Waiting...';
+    }
+});
 
 // ── GAME LOOP ─────────────────────────────────────────────────────────────────
 
 function animate() {
     requestAnimationFrame(animate);
-    if (gameOver) return;
     if (!modelLoaded) return;
 
     const now = performance.now();
     const delta = (now - lastTime) / 1000;
     lastTime = now;
 
-    updateClock();
-
     if (mixer) mixer.update(delta);
+    for (const id in remotePlayerMixers) remotePlayerMixers[id].update(delta);
 
-    for (const id in remotePlayerMixers) {
-        remotePlayerMixers[id].update(delta);
+    // Spectate mode — just follow the target player and render, skip all game logic
+    if (spectating) {
+        if (spectateTargetId && remotePlayers[spectateTargetId]) {
+            const pos = remotePlayers[spectateTargetId].position;
+            camera.position.x = pos.x;
+            camera.position.z = pos.z;
+            controls.target.copy(pos);
+        }
+        controls.update();
+        renderer.render(scene, camera);
+        return;
     }
+
+    if (gameOver) return;
+
+    updateClock();
 
     const previousPosition = player.position.clone();
 
@@ -498,13 +631,10 @@ function animate() {
 
     // ── NPC UPDATE ────────────────────────────────────────────────────────────
 
-    // Solo: run the AI locally.
-    // Multiplayer: server owns all NPC logic; client only mirrors received positions.
     if (!isMultiplayer) {
         updateNPCs(npcs, player, playerBox, walls, delta, scene);
     }
 
-    // Check if any NPC is touching the player — deals contact damage
     for (let i = 0; i < npcs.length; i++) {
         const npcBox = new THREE.Box3().setFromObject(npcs[i]);
         if (npcBox.intersectsBox(playerBox)) {
@@ -527,19 +657,15 @@ function animate() {
 
     const SPAWN_PER_KILL = 2;
     const MAX_FOXES = 20;
-    // Snapshot NPC server IDs before bullets are processed so we can detect kills
     const npcIdsBefore = npcs.map((n, i) => n.userData.serverId ?? i);
     const killsThisFrame = updateBullets(bullets, npcs, walls, scene);
     if (killsThisFrame > 0) {
         if (!isMultiplayer) {
-            // Solo: increment kills locally and spawn replacements
             for (let k = 0; k < killsThisFrame; k++) addKill();
             const canSpawn = Math.max(0, MAX_FOXES - npcs.length);
             const toSpawn = Math.min(SPAWN_PER_KILL * killsThisFrame, canSpawn);
             if (toSpawn > 0) createNPCs(toSpawn, scene, player);
         } else if (socket && socket.readyState === 1) {
-            // Multiplayer: tell server which NPCs were killed.
-            // Server handles kill count, respawning, and broadcasting killUpdate to everyone.
             const npcIdsAfter = new Set(npcs.map((n, i) => n.userData.serverId ?? i));
             for (const npcId of npcIdsBefore) {
                 if (!npcIdsAfter.has(npcId)) {
@@ -562,7 +688,6 @@ function animate() {
 
     // ── LEVEL UP CHECK ────────────────────────────────────────────────────────
 
-    // Solo only — in multiplayer the server owns kill count, level is set by killUpdate
     if (!isMultiplayer) {
         checkLevelUp(totalKills, scene, npcs, player);
     }

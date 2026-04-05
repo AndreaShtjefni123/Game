@@ -103,7 +103,9 @@ wss.on('connection', (socket) => {
                 players: [id],
                 gameState: { level: 1, kills: 0 },
                 npcs: [],            // authoritative NPC list
-                playerPositions: {}  // player positions fed to NPC AI each tick
+                playerPositions: {}, // player positions fed to NPC AI each tick
+                deaths: [],          // collects each player's stats when they die
+                restartVotes: new Set() // tracks who has voted to restart
             };
             spawnNPCs(rooms[roomCode], 3);
             rooms[roomCode].interval = startRoomLoop(roomCode);
@@ -121,7 +123,8 @@ wss.on('connection', (socket) => {
                 type: 'joinSuccess',
                 code: data.code,
                 id,
-                gameState: room.gameState
+                gameState: room.gameState,
+                existingPlayers: room.players.filter(p => p !== id) // everyone already in room
             }));
             brodcast({ type: 'playerJoined', id }, id, data.code);
 
@@ -144,6 +147,34 @@ wss.on('connection', (socket) => {
                 rooms[roomCode].playerPositions[id] = { x: data.x, z: data.z };
             }
             brodcast({ ...data, id }, id, roomCode);
+
+        // Player died — store their stats; when all are dead broadcast leaderboard
+        } else if (data.type === 'playerDied') {
+            const roomCode = getRoomCodeByPlayerId(id);
+            if (!roomCode) return;
+            const room = rooms[roomCode];
+            room.deaths.push({ id, kills: data.kills, time: data.time });
+            if (room.deaths.length >= room.players.length) {
+                room.deaths.sort((a, b) => b.kills - a.kills); // sort by kills descending
+                brodcast({ type: 'leaderboard', results: room.deaths }, null, roomCode);
+            }
+
+        // Player voted to restart — when everyone votes, reset the room and restart
+        } else if (data.type === 'requestRestart') {
+            const roomCode = getRoomCodeByPlayerId(id);
+            if (!roomCode) return;
+            const room = rooms[roomCode];
+            room.restartVotes.add(id);
+            brodcast({ type: 'restartVote', votes: room.restartVotes.size, total: room.players.length }, null, roomCode);
+            if (room.restartVotes.size >= room.players.length) {
+                // All players voted — reload their pages (cleanest reset)
+                brodcast({ type: 'restartGame' }, null, roomCode);
+            }
+
+        // Host pressed Start — broadcast gameStart to everyone in the room
+        } else if (data.type === 'startGame') {
+            const roomCode = getRoomCodeByPlayerId(id);
+            if (roomCode) brodcast({ type: 'gameStart' }, null, roomCode);
 
         // All other messages — relay to everyone in the same room
         } else {
