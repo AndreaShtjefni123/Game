@@ -29,23 +29,104 @@ function getRoomCodeByPlayerId(playerId) {
 
 //  NPC SIMULATION 
 
-// Pushes `count` plain {id, x, z} objects into the room — no meshes, just data
-function spawnNPCs(room, count) {
+// Pushes `count` plain NPC objects into the room — no meshes, just data
+// Pass isBoss=true to spawn the boss instead of a regular fox
+function spawnNPCs(room, count, isBoss = false) {
     for (let i = 0; i < count; i++) {
-        room.npcs.push({
+        const npc = {
             id: npcIdCounter++,
             x: Math.random() * 70 - 35,
             z: Math.random() * 70 - 35
-        });
+        };
+        if (isBoss) {
+            npc.isBoss = true;
+            npc.hp = 100;
+            npc.shootTimer = 0;
+            npc.spawnTimer = 0;
+        }
+        room.npcs.push(npc);
     }
 }
 
 // Moves every NPC toward the nearest player — runs on the server so all clients stay in sync
-function updateNPCs(room) {
+// Returns true if an NPC at (nx, nz) with half-size 0.75 overlaps any wall
+function collidesWithWall(nx, nz, walls) {
+    const nHalf = 0.75; // NPC hitbox is 1.5x1.5 so half = 0.75
+    for (const w of walls) {
+        // Wall is BoxGeometry(20, 10, 1) — half extents depend on rotation
+        // rotation.y = 0      → wide on X (halfX=10, halfZ=0.5)
+        // rotation.y = PI/2   → wide on Z (halfX=0.5, halfZ=10)
+        const rotated = Math.abs(Math.sin(w.ry)) > 0.5;
+        const wHalfX = rotated ? 0.5 : 10;
+        const wHalfZ = rotated ? 10  : 0.5;
+        // AABB overlap check
+        if (Math.abs(nx - w.x) < nHalf + wHalfX &&
+            Math.abs(nz - w.z) < nHalf + wHalfZ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Handles all boss-specific logic for one tick
+function updateBoss(npc, room, roomCode) {
+    const DELTA = 0.05; // server runs at fixed 50ms = 0.05s per tick
+
+    // Find nearest player to chase
+    const positions = Object.values(room.playerPositions);
+    let targetX = positions[0].x;
+    let targetZ = positions[0].z;
+    let nearestDist = Infinity;
+    for (const pos of positions) {
+        const dx = pos.x - npc.x;
+        const dz = pos.z - npc.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < nearestDist) { nearestDist = dist; targetX = pos.x; targetZ = pos.z; }
+    }
+
+    // Speed changes based on HP phase
+    let speed;
+    if (npc.hp > 66)      speed = 0.03; // phase 1 — slow
+    else if (npc.hp > 33) speed = 0.05; // phase 2 — medium
+    else                   speed = 0.08; // phase 3 — fast
+
+    // Boss moves straight toward player, ignores walls
+    const dx = targetX - npc.x;
+    const dz = targetZ - npc.z;
+    const len = Math.sqrt(dx * dx + dz * dz);
+    if (len > 0.1) {
+        npc.x += (dx / len) * speed;
+        npc.z += (dz / len) * speed;
+    }
+
+    // Shoot timer — fires a bullet at nearest player every 3 seconds
+    npc.shootTimer += DELTA;
+    if (npc.shootTimer >= 3) {
+        npc.shootTimer = 0;
+        // Tell all clients to spawn a boss bullet at this position heading toward the nearest player
+        brodcast({ type: 'bossBullet', x: npc.x, z: npc.z, targetX, targetZ }, null, roomCode);
+    }
+
+    // Spawn timer — summons 2 minions every 10 seconds
+    npc.spawnTimer += DELTA;
+    if (npc.spawnTimer >= 10) {
+        npc.spawnTimer = 0;
+        if (room.npcs.length < 20) spawnNPCs(room, 2);
+    }
+}
+
+function updateNPCs(room, roomCode) {
     const positions = Object.values(room.playerPositions);
     if (positions.length === 0) return;
+    const walls = room.walls || [];
 
     for (const npc of room.npcs) {
+        // Boss has its own update function
+        if (npc.isBoss) {
+            updateBoss(npc, room, roomCode);
+            continue;
+        }
+
         // Find nearest player
         let targetX = positions[0].x;
         let targetZ = positions[0].z;
@@ -61,15 +142,43 @@ function updateNPCs(room) {
             }
         }
 
-        // Move toward that player at fixed speed
+        // Separation — push foxes apart if closer than 3 units
+        for (const other of room.npcs) {
+            if (other.id === npc.id) continue;
+            const sdx = npc.x - other.x;
+            const sdz = npc.z - other.z;
+            const dist = Math.sqrt(sdx * sdx + sdz * sdz);
+            if (dist < 3 && dist > 0) {
+                const push = (3 - dist) * 0.05;
+                npc.x += (sdx / dist) * push;
+                npc.z += (sdz / dist) * push;
+            }
+        }
+
         const dx = targetX - npc.x;
         const dz = targetZ - npc.z;
         const len = Math.sqrt(dx * dx + dz * dz);
-        if (len > 0.1) {
-            const speed = 0.10;
-            npc.x += (dx / len) * speed;
-            npc.z += (dz / len) * speed;
-        }
+        if (len <= 0.1) continue;
+
+        const speed = 0.10;
+        const dirX = (dx / len) * speed;
+        const dirZ = (dz / len) * speed;
+        const prevX = npc.x;
+        const prevZ = npc.z;
+
+        // Attempt 1 — move both X and Z
+        npc.x += dirX;
+        npc.z += dirZ;
+        if (!collidesWithWall(npc.x, npc.z, walls)) continue;
+
+        // Attempt 2 — revert, try X only
+        npc.x = prevX; npc.z = prevZ;
+        npc.x += dirX;
+        if (collidesWithWall(npc.x, npc.z, walls)) npc.x = prevX;
+
+        // Attempt 3 — try Z only
+        npc.z += dirZ;
+        if (collidesWithWall(npc.x, npc.z, walls)) npc.z = prevZ;
     }
 }
 
@@ -78,7 +187,7 @@ function startRoomLoop(roomCode) {
     const interval = setInterval(() => {
         const room = rooms[roomCode];
         if (!room) { clearInterval(interval); return; }
-        updateNPCs(room);
+        updateNPCs(room, roomCode);
         brodcast({ type: 'npcState', npcs: room.npcs }, null, roomCode);
     }, 50);
     return interval;
@@ -101,9 +210,10 @@ wss.on('connection', (socket) => {
             rooms[roomCode] = {
                 hostId: id,
                 players: [id],
-                gameState: { level: 1, kills: 0 },
+                gameState: { level: 1, kills: 0, killTarget: 15 },
                 npcs: [],            // authoritative NPC list
                 playerPositions: {}, // player positions fed to NPC AI each tick
+                walls:data.walls,
                 deaths: [],          // collects each player's stats when they die
                 restartVotes: new Set() // tracks who has voted to restart
             };
@@ -124,20 +234,55 @@ wss.on('connection', (socket) => {
                 code: data.code,
                 id,
                 gameState: room.gameState,
+                walls:room.walls,
                 existingPlayers: room.players.filter(p => p !== id) // everyone already in room
             }));
             brodcast({ type: 'playerJoined', id }, id, data.code);
 
-        // Client reports an NPC kill — server removes it, spawns 2 replacements, syncs everyone
+        // Client reports an NPC hit — boss loses HP, regular fox is removed immediately
         } else if (data.type === 'kill') {
             const roomCode = getRoomCodeByPlayerId(id);
             if (!roomCode) return;
             const room = rooms[roomCode];
             const idx = room.npcs.findIndex(n => n.id === data.npcId);
-            if (idx !== -1) room.npcs.splice(idx, 1);
-            spawnNPCs(room, 2);
+            if (idx === -1) return;
+            const npc = room.npcs[idx];
+
+            if (npc.isBoss) {
+                // Boss takes 1 HP per bullet hit
+                npc.hp--;
+                brodcast({ type: 'bossHp', npcId: npc.id, hp: npc.hp }, null, roomCode);
+                if (npc.hp > 0) return; // boss still alive, don't remove yet
+            }
+
+            // NPC is dead — remove it and sync everyone
+            room.npcs.splice(idx, 1);
             room.gameState.kills++;
             brodcast({ type: 'kill', npcId: data.npcId }, null, roomCode);
+
+            // Check if kill target reached — trigger level up
+            const KILL_TARGETS = [15, 40, 70, 100];
+            const nextTarget = KILL_TARGETS[room.gameState.level - 1] ?? (room.gameState.killTarget + 30);
+            if (room.gameState.kills >= nextTarget) {
+                room.gameState.level++;
+                room.gameState.killTarget = nextTarget;
+                // Clear all remaining NPCs
+                room.npcs.length = 0;
+                // Broadcast level-up so clients heal and show the overlay
+                brodcast({ type: 'levelUp', level: room.gameState.level }, null, roomCode);
+                // Spawn boss at level 5, new fox wave otherwise
+                setTimeout(() => {
+                    if (room.gameState.level === 5) {
+                        spawnNPCs(room, 1, true);
+                    } else {
+                        spawnNPCs(room, Math.min(2 + room.gameState.level, 20));
+                    }
+                }, 1500); // wait 1.5s to match the client overlay duration
+            } else {
+                // Normal kill — spawn 2 replacements
+                spawnNPCs(room, 2);
+            }
+
             brodcast({ type: 'killUpdate', kills: room.gameState.kills, level: room.gameState.level }, null, roomCode);
 
         // Player moved — save position for NPC targeting, relay to other players
