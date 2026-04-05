@@ -71,14 +71,25 @@ function connectToServer() {
         }
 
         if (data.type === 'npcState') {
-            while (npcs.length < data.npcs.length) createNPCs(1, scene, player);
+            // Spawn missing NPCs — use createBoss for boss, createNPCs for regular
+            while (npcs.length < data.npcs.length) {
+                const serverNpc = data.npcs[npcs.length];
+                if (serverNpc && serverNpc.isBoss) createBoss(scene, player);
+                else createNPCs(1, scene, player);
+            }
+            // Remove excess NPC meshes
             while (npcs.length > data.npcs.length) {
                 scene.remove(npcs[npcs.length - 1]);
                 npcs.splice(npcs.length - 1, 1);
             }
+            // Sync position, rotation and serverId — lerp for smooth movement
             for (let i = 0; i < data.npcs.length; i++) {
                 npcs[i].userData.serverId = data.npcs[i].id;
-                npcs[i].position.set(data.npcs[i].x, 0, data.npcs[i].z);
+                // Lerp toward server position instead of snapping — smooths out 20fps updates
+                npcs[i].position.x += (data.npcs[i].x - npcs[i].position.x) * 0.3;
+                npcs[i].position.z += (data.npcs[i].z - npcs[i].position.z) * 0.3;
+                // Apply rotation so NPC faces its movement direction
+                if (data.npcs[i].ry !== undefined) npcs[i].rotation.y = data.npcs[i].ry;
             }
         }
 
@@ -128,7 +139,10 @@ function connectToServer() {
         if (data.type === 'joinSuccess') {
             isHost = false;
             serverWalls = data.walls;
-            for (const pid of data.existingPlayers) roomPlayers.push(pid);
+            for (const pid of data.existingPlayers) {
+                roomPlayers.push(pid);
+                spawnRemotePlayer(pid); // spawn duck meshes for players already in the room
+            }
             roomPlayers.push(myId);
             document.getElementById('mainMenu').style.display = 'none';
             document.getElementById('waitingRoom').style.display = 'flex';

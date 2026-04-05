@@ -84,11 +84,11 @@ function updateBoss(npc, room, roomCode) {
         if (dist < nearestDist) { nearestDist = dist; targetX = pos.x; targetZ = pos.z; }
     }
 
-    // Speed changes based on HP phase
+    // Speed changes based on HP phase — multiplied by 3 to match solo 60fps speed
     let speed;
-    if (npc.hp > 66)      speed = 0.03; // phase 1 — slow
-    else if (npc.hp > 33) speed = 0.05; // phase 2 — medium
-    else                   speed = 0.08; // phase 3 — fast
+    if (npc.hp > 66)      speed = 0.09; // phase 1
+    else if (npc.hp > 33) speed = 0.15; // phase 2
+    else                   speed = 0.24; // phase 3
 
     // Boss moves straight toward player, ignores walls
     const dx = targetX - npc.x;
@@ -160,7 +160,10 @@ function updateNPCs(room, roomCode) {
         const len = Math.sqrt(dx * dx + dz * dz);
         if (len <= 0.1) continue;
 
-        const speed = 0.10;
+        // Store rotation so client can face the NPC toward its target
+        npc.ry = Math.atan2(dx / len, dz / len) + Math.PI;
+
+        const speed = 0.30; // 0.10/frame at 60fps = 6 units/sec; 0.30/tick at 20fps = 6 units/sec
         const dirX = (dx / len) * speed;
         const dirZ = (dz / len) * speed;
         const prevX = npc.x;
