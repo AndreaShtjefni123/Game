@@ -26,9 +26,7 @@ export function setGameOverCallback(cb) {
 
 // ── INVINCIBILITY FRAMES ──────────────────────────────────────────────────────
 
-// Returns true if the player is currently invincible (within IFRAME_DURATION ms of last hit)
-// Prevents multiple hits registering in the same brief window
-export function isInvincible() {
+function isInvincible() {
     return (Date.now() - lastHitTime) < IFRAME_DURATION;
 }
 
@@ -57,21 +55,6 @@ export function takeDamage(amount = DAMAGE_PER_HIT) {
 export function heal(amount) {
     playerHealth = Math.min(MAX_HEALTH, playerHealth + amount); // clamp to max
     updateHealthBar(); // sync the bar immediately
-}
-
-// ── GETTERS ───────────────────────────────────────────────────────────────────
-
-// Returns current HP — can be read by other modules if needed
-export function getHealth() {
-    return playerHealth;
-}
-
-// Resets HP to full and clears i-frames — used for restart
-export function resetHealth() {
-    playerHealth = MAX_HEALTH;
-    lastHitTime = -Infinity; // clear i-frame timer
-    updateHealthBar();
-    stopFlash();             // make sure the duck isn't stuck mid-flash
 }
 
 // ── HEALTH BAR UI ─────────────────────────────────────────────────────────────

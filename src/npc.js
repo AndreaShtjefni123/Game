@@ -10,7 +10,7 @@ export const npcs = [];
 
 // The fox .glb model loaded once and cloned for every spawn
 // Starts as null until the loader finishes
-export let foxTemplate = null;
+let foxTemplate = null;
 
 // If createNPCs() or createBoss() is called before the model finishes loading,
 // the request gets queued here and flushed once the model is ready

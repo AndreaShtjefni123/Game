@@ -4,7 +4,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { npcs, createNPCs, updateNPCs, createBoss } from "./npc.js";
 import { bullets, shoot, updateBullets, spawnRemoteBullet, spawnBossBullet } from "./shoot.js";
-import { updateClock, showFinalTime, showFinalKills, addKill, totalKills, survivalTime, setKills } from "./clock.js";
+import { updateClock, showFinalTime, showFinalKills, addKill, totalKills, survivalTime } from "./clock.js";
 import { takeDamage, updateHealthBar, setDuckMesh, setGameOverCallback } from "./health.js";
 import { updatePickups, startPickupSpawner } from "./pickup.js";
 import { checkLevelUp, getCurrentLevel, triggerLevelUpEffect } from "./levels.js";
@@ -480,6 +480,38 @@ document.getElementById('multiBtn').addEventListener('click', () => {
     document.getElementById('createBtn').disabled = true;
     document.getElementById('joinBtn').disabled = true;
     document.getElementById('createBtn').innerText = 'Connecting...';
+});
+
+document.getElementById('joinPartyBtn').addEventListener('click', () => {
+    document.getElementById('joinCodePanel').style.display = 'flex';
+    document.getElementById('joinPartyBtn').style.display = 'none';
+    document.getElementById('createBtn').style.display = 'none';
+    document.getElementById('backFromRoomOptions').style.display = 'none';
+});
+
+document.getElementById('backFromJoin').addEventListener('click', () => {
+    document.getElementById('joinCodePanel').style.display = 'none';
+    document.getElementById('joinPartyBtn').style.display = 'block';
+    document.getElementById('createBtn').style.display = 'block';
+    document.getElementById('backFromRoomOptions').style.display = 'block';
+    document.getElementById('joinError').style.display = 'none';
+    document.getElementById('codeInput').value = '';
+});
+
+document.getElementById('backFromRoomOptions').addEventListener('click', () => {
+    if (socket) { socket.close(); socket = null; }
+    isMultiplayer = false;
+    document.getElementById('roomOptions').style.display = 'none';
+    document.getElementById('soloBtn').style.display = 'block';
+    document.getElementById('multiBtn').style.display = 'block';
+    document.getElementById('joinError').style.display = 'none';
+    document.getElementById('createBtn').innerText = 'Create Party';
+    document.getElementById('createBtn').disabled = false;
+    document.getElementById('joinBtn').disabled = false;
+});
+
+document.getElementById('backFromWaiting').addEventListener('click', () => {
+    window.location.reload();
 });
 
 document.getElementById('createBtn').addEventListener('click', () => {

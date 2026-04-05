@@ -101,7 +101,6 @@ export function updateUltimate(delta) {
             if (dist < nearestDist) {
                 nearestDist = dist;
                 nearestFox = npcsRef[j];
-                d.targetIndex = j; // store index for potential future use
             }
         }
 

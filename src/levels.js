@@ -8,10 +8,6 @@ import { createNPCs, createBoss } from "./npc.js";
 // Tracks which level the player is currently on — starts at 1
 export let currentLevel = 1;
 
-// Optional override for boss spawning — set by main.js in multiplayer
-// If set, this function is called instead of createBoss() so the server can handle it
-let bossSpawnHandler = null;
-export function setBossSpawnHandler(fn) { bossSpawnHandler = fn; }
 // How many total kills are needed to trigger the next level-up
 let killTarget = 15;
 // Guard flag — prevents level-up from firing more than once if multiple kills land in the same frame
@@ -22,23 +18,6 @@ let levelingUp = false;
 // Returns the current level — read by main.js to display the level on the HUD
 export function getCurrentLevel() {
     return currentLevel;
-}
-
-// Fox move speed scales up 15% per level
-// Level 1 = 1.0x (base), Level 2 = 1.15x, Level 3 = 1.30x, etc.
-export function getFoxSpeedMultiplier() {
-    return 1.0 + (currentLevel - 1) * 0.15;
-}
-
-// How long between NPC spawns — shrinks each level to increase pressure
-// Starts at 2 seconds, reduces by 0.25s per level, minimum 0.5s
-export function getSpawnCooldown() {
-    return Math.max(0.5, 2.0 - (currentLevel - 1) * 0.25);
-}
-
-// Returns the total kill count needed to advance to the next level
-export function getKillTarget() {
-    return killTarget;
 }
 
 // Called in multiplayer when the server broadcasts a levelUp message.
@@ -93,11 +72,7 @@ function doLevelUp(scene, npcs, player) {
     // Wait 1.5s (overlay duration) then spawn the next wave
     setTimeout(() => {
         if (currentLevel === 5) {
-            if (bossSpawnHandler) {
-                bossSpawnHandler(); // multiplayer: notify server to spawn boss
-            } else {
-                createBoss(scene, player); // solo: spawn boss locally
-            }
+            createBoss(scene, player);
         } else {
             const startingFoxes = Math.min(2 + currentLevel, 20); // each level starts with more foxes, capped at 20
             createNPCs(startingFoxes, scene, player);
