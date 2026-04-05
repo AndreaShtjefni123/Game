@@ -5,9 +5,9 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 // GLTFLoader lets us load .glb model files (the duck player model)
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 // NPC array + functions to create and update foxes/boss each frame
-import { npcs, createNPCs, updateNPCs, foxTemplate } from "./npc.js";
+import { npcs, createNPCs, updateNPCs, createBoss } from "./npc.js";
 // bullets array + shoot (fires on click) + updateBullets (moves them + checks hits)
-import { bullets, shoot, updateBullets, spawnRemoteBullet } from "./shoot.js";
+import { bullets, shoot, updateBullets, spawnRemoteBullet, spawnBossBullet } from "./shoot.js";
 // Timer and kill counter — updateClock ticks every frame, addKill increments the counter
 import { updateClock, showFinalTime, showFinalKills, addKill, totalKills } from "./clock.js";
 // Player health system — takeDamage, healing, health bar UI, game over callback
@@ -15,7 +15,7 @@ import { takeDamage, updateHealthBar, setDuckMesh, setGameOverCallback } from ".
 // Popcorn pickups that heal the player when touched
 import { updatePickups, startPickupSpawner } from "./pickup.js";
 // Level progression — checks kill count and triggers level-up when target is hit
-import { checkLevelUp, getCurrentLevel } from "./levels.js";
+import { checkLevelUp, getCurrentLevel, setBossSpawnHandler } from "./levels.js";
 // Ultimate ability — charges over time, fires mini ducks on Q press
 import { initUltimate, updateUltimate } from "./ultimate.js";
 
@@ -32,10 +32,6 @@ let myId = null;
 // Key = their ID string, Value = their Group in the scene.
 const remotePlayers = {};
 
-// serverNpcMeshes holds a Three.js mesh for each NPC the server is tracking.
-// Key = server NPC id (number), Value = Three.js mesh in the scene.
-// Created/removed dynamically as the server adds or removes NPCs.
-const serverNpcMeshes = {};
 
 // Each remote duck needs its own AnimationMixer to play the
 // waddle clip independently from our own mixer.
@@ -102,6 +98,37 @@ function connectToServer() {
                 scene.remove(npcs[idx]);
                 npcs.splice(idx, 1);
             }
+        }
+
+        // 'bossSpawned' — server confirmed boss exists, create the mesh locally
+        if (data.type === 'bossSpawned') {
+            createBoss(scene, player);
+            document.getElementById('bossBarContainer').style.display = 'block';
+        }
+
+        // 'bossHp' — another player hit the boss, sync the health bar
+        if (data.type === 'bossHp') {
+            const boss = npcs.find(n => n.userData.isBoss);
+            if (boss) {
+                boss.userData.hp = data.hp;
+                const pct = (data.hp / 100) * 100;
+                document.getElementById('bossBarInner').style.width = pct + '%';
+            }
+        }
+
+        // 'bossDied' — boss was killed by another player, remove it from our scene
+        if (data.type === 'bossDied') {
+            const idx = npcs.findIndex(n => n.userData.isBoss);
+            if (idx !== -1) {
+                scene.remove(npcs[idx]);
+                npcs.splice(idx, 1);
+            }
+            document.getElementById('bossBarContainer').style.display = 'none';
+        }
+
+        // 'bossShoot' — server fired a boss bullet, spawn it locally
+        if (data.type === 'bossShoot') {
+            spawnBossBullet(data.x, data.z, data.dirX, data.dirZ, scene);
         }
     };
 
@@ -403,6 +430,12 @@ document.getElementById('soloBtn').addEventListener('click', () => {
 document.getElementById('multiBtn').addEventListener('click', () => {
     isMultiplayer = true;
     connectToServer();
+    // In multiplayer, tell the server to spawn the boss instead of doing it locally
+    setBossSpawnHandler(() => {
+        if (socket && socket.readyState === 1) {
+            socket.send(JSON.stringify({ type: 'spawnBoss' }));
+        }
+    });
     startGame();
 });
 
@@ -537,7 +570,9 @@ function animate() {
 
     const SPAWN_PER_KILL = 2; // how many new foxes spawn when a fox is killed
     const MAX_FOXES = 20;     // hard cap — never more than 20 NPCs on screen at once
-    // Snapshot server IDs before updateBullets so we can detect which foxes were killed
+    // Snapshot boss HP and server IDs before updateBullets so we can detect hits and kills
+    const bossBefore = npcs.find(n => n.userData.isBoss);
+    const bossHpBefore = bossBefore ? bossBefore.userData.hp : null;
     const npcIdsBefore = npcs.map(n => n.userData.serverId);
     // Move all bullets forward and check if they hit a wall or NPC
     // Returns how many NPCs were killed this frame
@@ -557,6 +592,18 @@ function animate() {
             for (const npcId of npcIdsBefore) {
                 if (npcId !== undefined && !npcIdsAfter.has(npcId)) {
                     socket.send(JSON.stringify({ type: 'kill', npcId }));
+                }
+            }
+
+            // Tell server if boss was hit or killed so HP stays in sync for everyone
+            if (bossHpBefore !== null) {
+                const bossAfter = npcs.find(n => n.userData.isBoss);
+                if (!bossAfter) {
+                    // Boss died on our end — tell server
+                    socket.send(JSON.stringify({ type: 'bossHit' }));
+                } else if (bossAfter.userData.hp !== bossHpBefore) {
+                    // Boss took damage — tell server
+                    socket.send(JSON.stringify({ type: 'bossHit' }));
                 }
             }
         }

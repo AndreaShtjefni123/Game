@@ -166,6 +166,18 @@ export function updateBullets(bullets, npcs, walls, scene) {
     return killsThisFrame; // main.js uses this to call addKill() and spawn new foxes
 }
 
+// Spawns a boss bullet using position and direction sent from the server
+export function spawnBossBullet(x, z, dirX, dirZ, scene) {
+    const dir = new THREE.Vector3(dirX, 0, dirZ).normalize();
+    const bullet = makeBulletMesh();
+    bullet.position.set(x + dirX * 2, 0, z + dirZ * 2);
+    bullet.rotation.y = Math.atan2(dirX, dirZ);
+    bullet.scale.set(2.5, 2.5, 2.5);
+    bullet.userData.isEnemyBullet = true;
+    scene.add(bullet);
+    bullets.push({ mesh: bullet, dir, speed: 0.7 });
+}
+
 // ── BOSS SHOOT ────────────────────────────────────────────────────────────────
 
 // Called from npc.js every 3 seconds when the boss is alive
