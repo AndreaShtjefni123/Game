@@ -1,84 +1,52 @@
 // Three.js is the core 3D library — handles scenes, cameras, meshes, lighting
 import * as THREE from "three";
-// OrbitControls lets the player zoom with the scroll wheel
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-// GLTFLoader lets us load .glb model files (the duck player model)
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-// NPC array + functions to create and update foxes/boss each frame
 import { npcs, createNPCs, updateNPCs, createBoss } from "./npc.js";
-// bullets array + shoot (fires on click) + updateBullets (moves them + checks hits)
 import { bullets, shoot, updateBullets, spawnRemoteBullet } from "./shoot.js";
-// Timer and kill counter — updateClock ticks every frame, addKill increments the counter
-// setKills lets the NPC follower sync their kill count to match the NPC host
 import { updateClock, showFinalTime, showFinalKills, addKill, totalKills, survivalTime, setKills } from "./clock.js";
-// Player health system — takeDamage, healing, health bar UI, game over callback
 import { takeDamage, updateHealthBar, setDuckMesh, setGameOverCallback } from "./health.js";
-// Popcorn pickups that heal the player when touched
 import { updatePickups, startPickupSpawner } from "./pickup.js";
-// Level progression — checks kill count and triggers level-up when target is hit
 import { checkLevelUp, getCurrentLevel } from "./levels.js";
-// Ultimate ability — charges over time, fires mini ducks on Q press
 import { initUltimate, updateUltimate } from "./ultimate.js";
 
-// ── MULTIPLAYER — WebSocket connection ────────────────────────────────────────
+// ── MULTIPLAYER ────────────────────────────────────────────────────────────────
 
-// isMultiplayer is set by the menu button — false = solo, true = Play Together
 let isMultiplayer = false;
-// socket is only created when the player picks Play Together
 let socket = null;
-// myId stays null until the server tells us who we are
 let myId = null;
-// isHost — true if this player created the room
 let isHost = false;
-// roomPlayers — list of player IDs in the waiting room
 const roomPlayers = [];
-
-// spectating — true when local player is dead but others are still alive
 let spectating = false;
 let spectateTargetId = null;
-
-// remotePlayers holds a Three.js Group for every OTHER player.
-// Key = their ID string, Value = their Group in the scene.
 const remotePlayers = {};
-
-// Each remote duck needs its own AnimationMixer to play the
-// waddle clip independently from our own mixer.
 const remotePlayerMixers = {};
-
-// We send our position 20 times per second (every 50 ms).
-// Sending every frame (60/s) would flood the server needlessly.
-const SEND_RATE = 50; // milliseconds
+const SEND_RATE = 50;
 let lastSendTime = 0;
 
-// Opens the WebSocket and sets up all message handlers.
-// Only called when the player picks Play Together.
 function connectToServer() {
     socket = new WebSocket(`ws://18.234.143.187:3000`);
 
     socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
 
-        // 'init' — sent once on connect, gives us our permanent ID
         if (data.type === 'init') {
             myId = data.id;
             console.log('Connected! My ID:', myId);
         }
 
-        // 'playerJoined' — a new player joined the room
         if (data.type === 'playerJoined') {
             roomPlayers.push(data.id);
             updateWaitingRoom();
             spawnRemotePlayer(data.id);
         }
 
-        // 'playerLeft' — remove their character from our scene
         if (data.type === 'playerLeft') {
             if (remotePlayers[data.id]) {
                 scene.remove(remotePlayers[data.id]);
                 delete remotePlayers[data.id];
                 delete remotePlayerMixers[data.id];
             }
-            // If we were spectating this player, switch to any remaining player
             if (spectating && spectateTargetId === data.id) {
                 const ids = Object.keys(remotePlayers);
                 spectateTargetId = ids.length > 0 ? ids[0] : null;
@@ -88,7 +56,6 @@ function connectToServer() {
             }
         }
 
-        // 'move' — another player moved, update their duck position
         if (data.type === 'move') {
             if (remotePlayers[data.id]) {
                 remotePlayers[data.id].position.set(data.x, data.y, data.z);
@@ -96,45 +63,32 @@ function connectToServer() {
             }
         }
 
-        // 'shoot' — another player fired, spawn a bullet traveling in their direction
         if (data.type === 'shoot') {
             spawnRemoteBullet(data.x, data.z, data.dirX, data.dirZ, scene);
         }
 
-        // 'npcState' — server sent authoritative NPC positions; sync meshes to match
         if (data.type === 'npcState') {
-            // Auto-create meshes for any new NPCs the server spawned
-            while (npcs.length < data.npcs.length) {
-                createNPCs(1, scene, player);
-            }
-            // Remove excess NPC meshes if server killed some
+            while (npcs.length < data.npcs.length) createNPCs(1, scene, player);
             while (npcs.length > data.npcs.length) {
                 scene.remove(npcs[npcs.length - 1]);
                 npcs.splice(npcs.length - 1, 1);
             }
-            // Sync all positions from server
             for (let i = 0; i < data.npcs.length; i++) {
                 npcs[i].userData.serverId = data.npcs[i].id;
                 npcs[i].position.set(data.npcs[i].x, 0, data.npcs[i].z);
             }
         }
 
-        // 'killUpdate' — server confirms kill count; all players sync their HUD
         if (data.type === 'killUpdate') {
             setKills(data.kills);
             document.getElementById('level').textContent = 'Level ' + data.level;
         }
 
-        // 'kill' — another player killed a fox, remove it from our scene
         if (data.type === 'kill') {
             const idx = npcs.findIndex(n => n.userData.serverId === data.npcId);
-            if (idx !== -1) {
-                scene.remove(npcs[idx]);
-                npcs.splice(idx, 1);
-            }
+            if (idx !== -1) { scene.remove(npcs[idx]); npcs.splice(idx, 1); }
         }
 
-        // 'roomCreated' — server confirmed room, show waiting room as host
         if (data.type === 'roomCreated') {
             isHost = true;
             roomPlayers.push(myId);
@@ -146,10 +100,8 @@ function connectToServer() {
             updateWaitingRoom();
         }
 
-        // 'joinSuccess' — code was valid, show waiting room as non-host
         if (data.type === 'joinSuccess') {
             isHost = false;
-            // Add everyone already in the room, then ourselves
             for (const pid of data.existingPlayers) roomPlayers.push(pid);
             roomPlayers.push(myId);
             document.getElementById('mainMenu').style.display = 'none';
@@ -158,19 +110,16 @@ function connectToServer() {
             updateWaitingRoom();
         }
 
-        // 'joinFailed' — wrong code, show error
         if (data.type === 'joinFailed') {
             document.getElementById('joinError').textContent = data.reason || 'Room not found. Check the code and try again.';
             document.getElementById('joinError').style.display = 'block';
         }
 
-        // 'gameStart' — host pressed Start, everyone begins
         if (data.type === 'gameStart') {
             document.getElementById('waitingRoom').style.display = 'none';
             startGame();
         }
 
-        // 'leaderboard' — all players died, show results table
         if (data.type === 'leaderboard') {
             spectating = false;
             spectateTargetId = null;
@@ -179,9 +128,7 @@ function connectToServer() {
             tbody.innerHTML = '';
             data.results.forEach((r, i) => {
                 const row = document.createElement('tr');
-                row.style.cssText = r.id === myId
-                    ? 'color:#ffdd00; font-weight:bold;'
-                    : 'color:white;';
+                row.style.cssText = r.id === myId ? 'color:#ffdd00; font-weight:bold;' : 'color:white;';
                 row.innerHTML = `
                     <td style="padding:10px;">${i + 1}</td>
                     <td style="padding:10px;">Player ${r.id.substring(0, 4)}${r.id === myId ? ' (you)' : ''}</td>
@@ -195,12 +142,10 @@ function connectToServer() {
             document.getElementById('restartWaiting').textContent = '0 / ' + data.results.length + ' want to play again';
         }
 
-        // 'restartVote' — someone pressed Start Again, show progress
         if (data.type === 'restartVote') {
             document.getElementById('restartWaiting').textContent = data.votes + ' / ' + data.total + ' want to play again';
         }
 
-        // 'restartGame' — all players voted, reload to restart fresh
         if (data.type === 'restartGame') {
             window.location.reload();
         }
@@ -211,9 +156,9 @@ function connectToServer() {
     socket.onclose = () => console.log('Disconnected from server');
 }
 
-// ── MULTIPLAYER — Spawn a visual for a remote player ─────────────────────────
+// ── REMOTE PLAYER SPAWN ───────────────────────────────────────────────────────
 
-let duckTemplateForRemote = null; // set once our own duck loads
+let duckTemplateForRemote = null;
 
 function spawnRemotePlayer(id) {
     const group = new THREE.Group();
@@ -223,23 +168,19 @@ function spawnRemotePlayer(id) {
         remoteDuck.scale.set(1.5, 1.5, 1.5);
         remoteDuck.rotation.y = Math.PI;
         group.add(remoteDuck);
-
         if (remoteDuck.animations && remoteDuck.animations.length > 0) {
             const m = new THREE.AnimationMixer(remoteDuck);
             m.clipAction(remoteDuck.animations[0]).play();
             remotePlayerMixers[id] = m;
         }
     } else {
-        // Fallback: blue box until the duck model finishes loading
         const geo = new THREE.BoxGeometry(1.5, 2, 1.5);
         const mat = new THREE.MeshStandardMaterial({ color: 0x00aaff });
         group.add(new THREE.Mesh(geo, mat));
     }
 
-    // Floating nametag drawn onto a canvas then used as a texture
     const canvas = document.createElement('canvas');
-    canvas.width = 128;
-    canvas.height = 32;
+    canvas.width = 128; canvas.height = 32;
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = 'white';
     ctx.font = 'bold 20px Arial';
@@ -264,11 +205,7 @@ scene.background = new THREE.Color('skyblue');
 
 // ── CAMERA ────────────────────────────────────────────────────────────────────
 
-const fov    = 60;
-const aspect = window.innerWidth / window.innerHeight;
-const near   = 1;
-const far    = 500;
-const camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 500);
 
 // ── RENDERER ──────────────────────────────────────────────────────────────────
 
@@ -297,16 +234,12 @@ loader.load(
     "/scriptduck.glb",
     (gltf) => {
         const duck = gltf.scene;
-
         const toRemove = [];
-        duck.traverse((child) => {
-            if (child.isCamera || child.isLight) toRemove.push(child);
-        });
+        duck.traverse((child) => { if (child.isCamera || child.isLight) toRemove.push(child); });
         toRemove.forEach((obj) => obj.parent.remove(obj));
 
         duck.scale.set(1.5, 1.5, 1.5);
         duck.rotation.y = Math.PI;
-
         player.add(duck);
         setDuckMesh(duck);
         modelLoaded = true;
@@ -324,27 +257,17 @@ loader.load(
         if (gltf.animations && gltf.animations.length > 0) {
             console.log("🦆 Animations found:", gltf.animations.map(a => a.name));
             mixer = new THREE.AnimationMixer(duck);
-            const waddleClip = gltf.animations.find(a => a.name.toLowerCase() === "waddle")
-                ?? gltf.animations[0];
-            if (waddleClip) {
-                waddleAction = mixer.clipAction(waddleClip);
-                waddleAction.play();
-                console.log("✅ Playing animation:", waddleClip.name);
-            }
+            const waddleClip = gltf.animations.find(a => a.name.toLowerCase() === "waddle") ?? gltf.animations[0];
+            if (waddleClip) { waddleAction = mixer.clipAction(waddleClip); waddleAction.play(); }
         } else {
             console.warn("⚠️ No animations found in duck GLB.");
         }
-
         console.log("✅ Duck model loaded!");
     },
-    (progress) => {
-        console.log(`Loading duck: ${Math.round((progress.loaded / progress.total) * 100)}%`);
-    },
+    (progress) => { console.log(`Loading duck: ${Math.round((progress.loaded / progress.total) * 100)}%`); },
     (error) => {
         console.error("❌ Failed to load duck model:", error);
-        const fallbackGeo = new THREE.SphereGeometry(1, 32, 16);
-        const fallbackMat = new THREE.MeshStandardMaterial({ color: 0xffff00 });
-        const fallbackMesh = new THREE.Mesh(fallbackGeo, fallbackMat);
+        const fallbackMesh = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16), new THREE.MeshStandardMaterial({ color: 0xffff00 }));
         player.add(fallbackMesh);
         modelLoaded = true;
     }
@@ -356,39 +279,20 @@ const walls = [];
 
 function createWalls(amount) {
     for (let i = 0; i < amount; i++) {
-        const wallGeo = new THREE.BoxGeometry(20, 10, 1);
-        const wallMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
-        const wall = new THREE.Mesh(wallGeo, wallMat);
-
-        wall.position.set(
-            Math.random() * 70 - 35,
-            4,
-            Math.random() * 70 - 35
+        const wall = new THREE.Mesh(
+            new THREE.BoxGeometry(20, 10, 1),
+            new THREE.MeshStandardMaterial({ color: 0x8B4513 })
         );
+        wall.position.set(Math.random() * 70 - 35, 4, Math.random() * 70 - 35);
+        wall.rotation.y = Math.random() < 0.5 ? 0 : Math.PI / 2;
 
-        if (Math.random() < 0.5) {
-            wall.rotation.y = 0;
-        } else {
-            wall.rotation.y = Math.PI / 2;
-        }
-
-        if (wall.position.distanceTo(player.position) < 8) {
-            i--;
-            continue;
-        }
+        if (wall.position.distanceTo(player.position) < 8) { i--; continue; }
 
         let overlapping = false;
         for (let j = 0; j < walls.length; j++) {
-            if (wall.position.distanceTo(walls[j].position) < 20) {
-                overlapping = true;
-                break;
-            }
+            if (wall.position.distanceTo(walls[j].position) < 20) { overlapping = true; break; }
         }
-
-        if (overlapping) {
-            i--;
-            continue;
-        }
+        if (overlapping) { i--; continue; }
 
         scene.add(wall);
         walls.push(wall);
@@ -398,9 +302,7 @@ createWalls(10);
 
 // ── FLOOR ─────────────────────────────────────────────────────────────────────
 
-const floorGeometry = new THREE.PlaneGeometry(100, 100);
-const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 });
-const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), new THREE.MeshStandardMaterial({ color: 0x228B22 }));
 floor.rotation.x = -Math.PI / 2;
 floor.position.y = -1;
 scene.add(floor);
@@ -413,8 +315,7 @@ scene.add(grid);
 
 // ── LIGHTING ──────────────────────────────────────────────────────────────────
 
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
-scene.add(ambientLight);
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
 const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
 sunLight.position.set(5, 10, 7);
 scene.add(sunLight);
@@ -448,7 +349,6 @@ controls.maxDistance  = 80;
 
 // ── GAME INIT ─────────────────────────────────────────────────────────────────
 
-// Updates the player list shown in the waiting room
 function updateWaitingRoom() {
     const list = document.getElementById('waitingPlayerList');
     list.innerHTML = '';
@@ -460,11 +360,8 @@ function updateWaitingRoom() {
     });
 }
 
-// Start Game button — host only, tells server to begin for everyone
 document.getElementById('startBtn').addEventListener('click', () => {
-    if (socket && socket.readyState === 1) {
-        socket.send(JSON.stringify({ type: 'startGame' }));
-    }
+    if (socket && socket.readyState === 1) socket.send(JSON.stringify({ type: 'startGame' }));
 });
 
 function startGame() {
@@ -476,13 +373,8 @@ function startGame() {
     animate();
 }
 
-// Solo button — no server, local AI runs as normal
-document.getElementById('soloBtn').addEventListener('click', () => {
-    isMultiplayer = false;
-    startGame();
-});
+document.getElementById('soloBtn').addEventListener('click', () => { isMultiplayer = false; startGame(); });
 
-// Play Together button — connect then show room create/join UI
 document.getElementById('multiBtn').addEventListener('click', () => {
     isMultiplayer = true;
     connectToServer();
@@ -491,36 +383,23 @@ document.getElementById('multiBtn').addEventListener('click', () => {
     document.getElementById('multiBtn').style.display = 'none';
 });
 
-// Create Room button — server will reply with roomCreated
 document.getElementById('createBtn').addEventListener('click', () => {
-    if (socket && socket.readyState === 1) {
-        socket.send(JSON.stringify({ type: 'createRoom' }));
-    }
+    if (socket && socket.readyState === 1) socket.send(JSON.stringify({ type: 'createRoom' }));
 });
 
-// Join Room button — server will reply with joinSuccess/joinFailed
 document.getElementById('joinBtn').addEventListener('click', () => {
     const code = document.getElementById('codeInput').value.trim().toUpperCase();
-    if (code && socket && socket.readyState === 1) {
-        socket.send(JSON.stringify({ type: 'joinRoom', code }));
-    }
+    if (code && socket && socket.readyState === 1) socket.send(JSON.stringify({ type: 'joinRoom', code }));
 });
 
 let gameOver = false;
 
-// Called by health.js when player HP reaches 0
 function triggerGameOver() {
     gameOver = true;
     showFinalTime();
     showFinalKills();
     if (isMultiplayer && socket && socket.readyState === 1) {
-        // Tell server we died — it collects stats and broadcasts leaderboard when everyone is dead
-        socket.send(JSON.stringify({
-            type: 'playerDied',
-            kills: totalKills,
-            time: Math.floor(survivalTime)
-        }));
-        // Switch to spectate mode — follow a surviving player
+        socket.send(JSON.stringify({ type: 'playerDied', kills: totalKills, time: Math.floor(survivalTime) }));
         spectating = true;
         const ids = Object.keys(remotePlayers);
         spectateTargetId = ids.length > 0 ? ids[0] : null;
@@ -532,13 +411,11 @@ function triggerGameOver() {
         document.getElementById('spectateStats').textContent =
             `Your score: ${totalKills} kills — ${Math.floor(survivalTime)}s`;
     } else {
-        // Solo game over — show the normal game over screen
         document.getElementById('gameOver').style.display = 'flex';
     }
 }
 setGameOverCallback(triggerGameOver);
 
-// Start Again button — votes to restart; server triggers reload when all players vote
 document.getElementById('restartBtn').addEventListener('click', () => {
     if (socket && socket.readyState === 1) {
         socket.send(JSON.stringify({ type: 'requestRestart' }));
@@ -560,7 +437,6 @@ function animate() {
     if (mixer) mixer.update(delta);
     for (const id in remotePlayerMixers) remotePlayerMixers[id].update(delta);
 
-    // Spectate mode — just follow the target player and render, skip all game logic
     if (spectating) {
         if (spectateTargetId && remotePlayers[spectateTargetId]) {
             const pos = remotePlayers[spectateTargetId].position;
@@ -587,8 +463,6 @@ function animate() {
     const cameraRight = new THREE.Vector3();
     cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0)).normalize();
 
-    // ── PLAYER MOVEMENT ───────────────────────────────────────────────────────
-
     const speed = 0.18;
     const moveDir = new THREE.Vector3();
 
@@ -597,28 +471,19 @@ function animate() {
     if (keys['a'] || keys['A']) moveDir.addScaledVector(cameraRight, -1);
     if (keys['d'] || keys['D']) moveDir.addScaledVector(cameraRight, 1);
 
-    const isMoving = moveDir.lengthSq() > 0;
-    if (isMoving) {
+    if (moveDir.lengthSq() > 0) {
         moveDir.normalize();
         player.position.addScaledVector(moveDir, speed);
         player.rotation.y = Math.atan2(moveDir.x, moveDir.z);
     }
 
-    // ── PLAYER WALL COLLISION ─────────────────────────────────────────────────
-
-    const playerBox = new THREE.Box3().setFromCenterAndSize(
-        player.position,
-        new THREE.Vector3(1.5, 2, 1.5)
-    );
+    const playerBox = new THREE.Box3().setFromCenterAndSize(player.position, new THREE.Vector3(1.5, 2, 1.5));
     for (let i = 0; i < walls.length; i++) {
-        const wallBox = new THREE.Box3().setFromObject(walls[i]);
-        if (playerBox.intersectsBox(wallBox)) {
+        if (playerBox.intersectsBox(new THREE.Box3().setFromObject(walls[i]))) {
             player.position.copy(previousPosition);
             break;
         }
     }
-
-    // ── BOUNDARY CHECK ────────────────────────────────────────────────────────
 
     if (player.position.x > 50 || player.position.x < -50 ||
         player.position.z > 50 || player.position.z < -50) {
@@ -629,31 +494,19 @@ function animate() {
         return;
     }
 
-    // ── NPC UPDATE ────────────────────────────────────────────────────────────
-
-    if (!isMultiplayer) {
-        updateNPCs(npcs, player, playerBox, walls, delta, scene);
-    }
+    if (!isMultiplayer) updateNPCs(npcs, player, playerBox, walls, delta, scene);
 
     for (let i = 0; i < npcs.length; i++) {
-        const npcBox = new THREE.Box3().setFromObject(npcs[i]);
-        if (npcBox.intersectsBox(playerBox)) {
+        if (new THREE.Box3().setFromObject(npcs[i]).intersectsBox(playerBox)) {
             takeDamage(20);
             break;
         }
     }
     if (gameOver) return;
 
-    // ── PICKUPS ───────────────────────────────────────────────────────────────
-
     updatePickups(scene, player);
-
-    // ── HUD UPDATES ───────────────────────────────────────────────────────────
-
     updateHealthBar();
     updateUltimate(delta);
-
-    // ── BULLETS ───────────────────────────────────────────────────────────────
 
     const SPAWN_PER_KILL = 2;
     const MAX_FOXES = 20;
@@ -662,20 +515,16 @@ function animate() {
     if (killsThisFrame > 0) {
         if (!isMultiplayer) {
             for (let k = 0; k < killsThisFrame; k++) addKill();
-            const canSpawn = Math.max(0, MAX_FOXES - npcs.length);
-            const toSpawn = Math.min(SPAWN_PER_KILL * killsThisFrame, canSpawn);
+            const toSpawn = Math.min(SPAWN_PER_KILL * killsThisFrame, Math.max(0, MAX_FOXES - npcs.length));
             if (toSpawn > 0) createNPCs(toSpawn, scene, player);
         } else if (socket && socket.readyState === 1) {
             const npcIdsAfter = new Set(npcs.map((n, i) => n.userData.serverId ?? i));
             for (const npcId of npcIdsBefore) {
-                if (!npcIdsAfter.has(npcId)) {
-                    socket.send(JSON.stringify({ type: 'kill', npcId }));
-                }
+                if (!npcIdsAfter.has(npcId)) socket.send(JSON.stringify({ type: 'kill', npcId }));
             }
         }
     }
 
-    // Check if any boss bullet has hit the player
     for (let i = bullets.length - 1; i >= 0; i--) {
         if (!bullets[i].mesh.userData.isEnemyBullet) continue;
         const bBox = new THREE.Box3().setFromObject(bullets[i].mesh);
@@ -686,27 +535,13 @@ function animate() {
         }
     }
 
-    // ── LEVEL UP CHECK ────────────────────────────────────────────────────────
-
-    if (!isMultiplayer) {
-        checkLevelUp(totalKills, scene, npcs, player);
-    }
+    if (!isMultiplayer) checkLevelUp(totalKills, scene, npcs, player);
     document.getElementById('level').textContent = `Level ${getCurrentLevel()}`;
-
-    // ── MULTIPLAYER — Send our position to the server ─────────────────────────
 
     if (isMultiplayer && socket && myId && socket.readyState === 1 && now - lastSendTime > SEND_RATE) {
         lastSendTime = now;
-        socket.send(JSON.stringify({
-            type: 'move',
-            x:  player.position.x,
-            y:  player.position.y,
-            z:  player.position.z,
-            ry: player.rotation.y
-        }));
+        socket.send(JSON.stringify({ type: 'move', x: player.position.x, y: player.position.y, z: player.position.z, ry: player.rotation.y }));
     }
-
-    // ── CAMERA FOLLOW ─────────────────────────────────────────────────────────
 
     camera.position.x = player.position.x;
     camera.position.z = player.position.z;

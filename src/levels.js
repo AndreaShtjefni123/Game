@@ -7,6 +7,11 @@ import { createNPCs, createBoss } from "./npc.js";
 
 // Tracks which level the player is currently on — starts at 1
 export let currentLevel = 1;
+
+// Optional override for boss spawning — set by main.js in multiplayer
+// If set, this function is called instead of createBoss() so the server can handle it
+let bossSpawnHandler = null;
+export function setBossSpawnHandler(fn) { bossSpawnHandler = fn; }
 // How many total kills are needed to trigger the next level-up
 let killTarget = 15;
 // Guard flag — prevents level-up from firing more than once if multiple kills land in the same frame
@@ -80,9 +85,13 @@ function doLevelUp(scene, npcs, player) {
     // Wait 1.5s (overlay duration) then spawn the next wave
     setTimeout(() => {
         if (currentLevel === 5) {
-            createBoss(scene, player);  // level 5 is a boss fight instead of a fox wave
+            if (bossSpawnHandler) {
+                bossSpawnHandler(); // multiplayer: notify server to spawn boss
+            } else {
+                createBoss(scene, player); // solo: spawn boss locally
+            }
         } else {
-            const startingFoxes = 2 + currentLevel; // each level starts with more foxes
+            const startingFoxes = Math.min(2 + currentLevel, 20); // each level starts with more foxes, capped at 20
             createNPCs(startingFoxes, scene, player);
         }
         levelingUp = false; // unlock — normal gameplay resumes

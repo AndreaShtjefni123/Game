@@ -10,7 +10,7 @@ export const npcs = [];
 
 // The fox .glb model loaded once and cloned for every spawn
 // Starts as null until the loader finishes
-let foxTemplate = null;
+export let foxTemplate = null;
 
 // If createNPCs() or createBoss() is called before the model finishes loading,
 // the request gets queued here and flushed once the model is ready
@@ -151,11 +151,11 @@ export function updateNPCs(npcs, player, _playerBox, walls, delta, scene) {
         let speed;
         if (npc.userData.isBoss) {
             if (npc.userData.hp > 66) {
-                speed = 0.05;                   // phase 1 (100–67 HP) — slow and menacing
+                speed = 0.03;                   // phase 1 (100–67 HP) — slow and menacing
             } else if (npc.userData.hp > 33) {
-                speed = 0.09;                   // phase 2 (66–34 HP) — picking up pace
+                speed = 0.05;                   // phase 2 (66–34 HP) — picking up pace
             } else {
-                speed = 0.15;                   // phase 3 (33–0 HP) — nearly as fast as the player
+                speed = 0.08;                   // phase 3 (33–0 HP) — faster but still manageable
             }
         } else {
             speed = 0.10;                       // regular fox always moves at this speed
@@ -170,7 +170,8 @@ export function updateNPCs(npcs, player, _playerBox, walls, delta, scene) {
             npc.userData.spawnTimer += delta;   // add seconds elapsed this frame
             if (npc.userData.spawnTimer >= 10) {
                 npc.userData.spawnTimer = 0;    // reset the timer
-                createNPCs(2, scene, player);   // spawn 2 new foxes near the player
+                // Only spawn minions if under the fox cap to prevent lag
+                if (npcs.length < 20) createNPCs(2, scene, player);
             }
 
             // Shoot timer — every 3 seconds the boss fires a bullet at the player
