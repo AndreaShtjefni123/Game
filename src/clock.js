@@ -44,3 +44,6 @@ export function resetClock() {
     document.getElementById('timer').textContent = 'Time: 0s';
     document.getElementById('kills').textContent = 'Kills: 0';
 }
+//In solo, there is no reset — the player clicks Play Again which calls
+//window.location.reload(),
+//which refreshes the entire page. That naturally resets everything back to zero.

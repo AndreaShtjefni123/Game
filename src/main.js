@@ -41,9 +41,6 @@ let spectateTargetId = null;
 const remotePlayers = {};
 
 
-// Each remote duck needs its own AnimationMixer to play the
-// waddle clip independently from our own mixer.
-const remotePlayerMixers = {};
 
 // We send our position 20 times per second (every 50 ms).
 // Sending every frame (60/s) would flood the server needlessly.
@@ -76,7 +73,6 @@ function connectToServer() {
             if (remotePlayers[data.id]) {
                 scene.remove(remotePlayers[data.id]);
                 delete remotePlayers[data.id];
-                delete remotePlayerMixers[data.id];
             }
             // If we were spectating this player, switch to any remaining player
             if (spectating && spectateTargetId === data.id) {
@@ -223,12 +219,7 @@ function spawnRemotePlayer(id) {
         remoteDuck.rotation.y = Math.PI;
         group.add(remoteDuck);
 
-        // Give the remote duck its own waddle animation
-        if (remoteDuck.animations && remoteDuck.animations.length > 0) {
-            const m = new THREE.AnimationMixer(remoteDuck);
-            m.clipAction(remoteDuck.animations[0]).play();
-            remotePlayerMixers[id] = m;
-        }
+
     } else {
         // Fallback: blue box until the duck model finishes loading
         const geo = new THREE.BoxGeometry(1.5, 2, 1.5);
@@ -297,10 +288,6 @@ let modelLoaded = false;
 // Tracks the timestamp of the last frame — used to calculate delta time
 let lastTime = performance.now();
 
-// Animation mixer and waddle action — set once the GLB loads
-let mixer = null;
-let waddleAction = null;
-
 // Load the duck .glb model asynchronously
 const loader = new GLTFLoader();
 loader.load(
@@ -334,21 +321,6 @@ loader.load(
                 delete remotePlayers[id];
                 spawnRemotePlayer(id);
             }
-        }
-
-        // Set up the Waddle animation if the GLB includes one
-        if (gltf.animations && gltf.animations.length > 0) {
-            console.log("🦆 Animations found:", gltf.animations.map(a => a.name));
-            mixer = new THREE.AnimationMixer(duck);
-            const waddleClip = gltf.animations.find(a => a.name.toLowerCase() === "waddle")
-                ?? gltf.animations[0]; // fallback to first clip if "waddle" isn't found
-            if (waddleClip) {
-                waddleAction = mixer.clipAction(waddleClip);
-                waddleAction.play();
-                console.log("✅ Playing animation:", waddleClip.name);
-            }
-        } else {
-            console.warn("⚠️ No animations found in duck GLB.");
         }
 
         console.log("✅ Duck model loaded!");
@@ -509,7 +481,8 @@ function startGame() {
 }
 
 // Solo button — no server, local AI runs as normal
-document.getElementById('soloBtn').addEventListener('click', () => {
+document.getElementById('soloBtn').addEventListener('click', () => { //browser API that finds an HTML element by its id
+    //attribute and returns it so you can read or change it with JavaScript.
     isMultiplayer = false;
     startGame();
 });
@@ -589,10 +562,6 @@ function animate() {
     const now = performance.now();
     const delta = (now - lastTime) / 1000;
     lastTime = now;
-
-    // Always advance animation mixers — remote ducks animate even while spectating
-    if (mixer) mixer.update(delta);
-    for (const id in remotePlayerMixers) remotePlayerMixers[id].update(delta);
 
     // Spectate mode — just follow the target player and render, skip all game logic
     if (spectating) {

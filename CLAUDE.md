@@ -56,7 +56,7 @@ Each `requestAnimationFrame`:
 
 ### Key design facts
 
-- **Player model**: `public/scriptduck.glb` (duck), scale 1.5×, fallback to yellow sphere on load failure. Has waddle animation via `AnimationMixer`
+- **Player model**: `public/scriptduck.glb` (duck), scale 1.5×, fallback to yellow sphere on load failure. No animations.
 - **NPC model**: `public/scriptfox.glb`, scale 3×. Boss uses same model at scale 8×
 - **Walls**: 10 brown boxes (20×10×1), randomly placed, collision tested with `Box3`
 - **Player bullets**: travel 0.4 units/frame, destroyed on wall or NPC hit
@@ -110,7 +110,11 @@ Both modes call `startGame()` which spawns foxes, pickups, ultimate, and starts 
 
 ### Multiplayer (current state)
 
-WebSocket server at `wss://game-production-9138.up.railway.app`. Server hosted on Debian VPS at `18.234.143.187` (SSH via `Game.pem`, user: `admin`).
+- **WebSocket server**: `ws://18.234.143.187:3000` — runs on AWS VPS (Debian), managed with pm2
+- **Frontend**: served at `http://18.234.143.187` via `serve ~/dist -p 80`
+- **VPS SSH**: `ssh -i "C:\Users\user\Game.pem" admin@18.234.143.187`
+- **Deploy frontend**: `npm run build` locally, then `scp -i "C:\Users\user\Game.pem" -r dist/ admin@18.234.143.187:~/dist`
+- **Start server on VPS**: `cd ~/Game && node src/server.js` (or `pm2 start src/server.js`)
 
 **What is shared in multiplayer:**
 - Player positions — each player sees other ducks with nametags and waddle animations
