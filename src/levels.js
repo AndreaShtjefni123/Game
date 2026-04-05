@@ -41,6 +41,14 @@ export function getKillTarget() {
     return killTarget;
 }
 
+// Called in multiplayer when the server broadcasts a levelUp message.
+// Skips NPC spawning (server handles that) — just heals and shows the overlay.
+export function triggerLevelUpEffect(level) {
+    currentLevel = level;
+    heal(100);
+    showLevelUpOverlay(level);
+}
+
 // ── CHECK LEVEL UP ────────────────────────────────────────────────────────────
 
 // Called every frame from main.js — compares totalKills to the current target

@@ -3,15 +3,16 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { npcs, createNPCs, updateNPCs, createBoss } from "./npc.js";
-import { bullets, shoot, updateBullets, spawnRemoteBullet } from "./shoot.js";
+import { bullets, shoot, updateBullets, spawnRemoteBullet, spawnBossBullet } from "./shoot.js";
 import { updateClock, showFinalTime, showFinalKills, addKill, totalKills, survivalTime, setKills } from "./clock.js";
 import { takeDamage, updateHealthBar, setDuckMesh, setGameOverCallback } from "./health.js";
 import { updatePickups, startPickupSpawner } from "./pickup.js";
-import { checkLevelUp, getCurrentLevel } from "./levels.js";
+import { checkLevelUp, getCurrentLevel, triggerLevelUpEffect } from "./levels.js";
 import { initUltimate, updateUltimate } from "./ultimate.js";
 
 // ── MULTIPLAYER ────────────────────────────────────────────────────────────────
 
+let serverWalls = null;
 let isMultiplayer = false;
 let socket = null;
 let myId = null;
@@ -96,13 +97,14 @@ function connectToServer() {
                 if (killedNpcIds.has(serverNpc.id)) continue;
 
                 if (localMap.has(serverNpc.id)) {
-                    // Already have this fox — store as target for smooth lerp this frame
+                    // Already have this NPC — store as target for smooth lerp this frame
                     const existing = localMap.get(serverNpc.id);
                     existing.userData.targetX = serverNpc.x;
                     existing.userData.targetZ = serverNpc.z;
                 } else {
-                    // Server added a new fox we don't have yet — spawn and tag it
-                    createNPCs(1, scene, player);
+                    // Server added a new NPC we don't have yet — spawn and tag it
+                    if (serverNpc.isBoss) createBoss(scene, player);
+                    else createNPCs(1, scene, player);
                     const newNpc = npcs[npcs.length - 1];
                     newNpc.userData.serverId = serverNpc.id;
                     newNpc.position.set(serverNpc.x, 0, serverNpc.z); // snap on first spawn
@@ -119,6 +121,28 @@ function connectToServer() {
 
         // 'kill' handler removed — npcState is now the sole authority on NPC removal
 
+        // Server fired a boss bullet — calculate direction and spawn it locally
+        if (data.type === 'bossBullet') {
+            const dx = data.targetX - data.x;
+            const dz = data.targetZ - data.z;
+            const len = Math.sqrt(dx * dx + dz * dz);
+            if (len > 0) spawnBossBullet(data.x, data.z, dx / len, dz / len, scene);
+        }
+
+        // Server updated boss HP — sync the HP bar UI
+        if (data.type === 'bossHp') {
+            const boss = npcs.find(n => n.userData.serverId === data.npcId);
+            if (boss) {
+                boss.userData.hp = data.hp;
+                document.getElementById('bossBarContainer').style.display = 'block';
+                document.getElementById('bossBarInner').style.width = data.hp + '%';
+            }
+        }
+
+        if (data.type === 'levelUp') {
+            triggerLevelUpEffect(data.level);
+        }
+
         if (data.type === 'roomCreated') {
             isHost = true;
             roomPlayers.push(myId);
@@ -132,6 +156,7 @@ function connectToServer() {
 
         if (data.type === 'joinSuccess') {
             isHost = false;
+            serverWalls = data.walls;
             for (const pid of data.existingPlayers) {
                 roomPlayers.push(pid);
                 spawnRemotePlayer(pid); // spawn a mesh for each player already in the room (e.g. the host)
@@ -148,9 +173,10 @@ function connectToServer() {
             document.getElementById('joinError').style.display = 'block';
         }
 
-        if (data.type === 'gameStart') {
-            document.getElementById('waitingRoom').style.display = 'none';
-            startGame();
+      if (data.type === 'gameStart') {
+        document.getElementById('waitingRoom').style.display = 'none';
+        if (serverWalls) placeWallsFromServer(serverWalls);
+        startGame();
         }
 
         if (data.type === 'leaderboard') {
@@ -344,6 +370,22 @@ function createWalls(amount) {
 }
 createWalls(10);
 
+
+function placeWallsFromServer(wallData) {
+    for (const wall of walls) scene.remove(wall);
+    walls.length = 0;
+    for (const w of wallData) {
+        const wall = new THREE.Mesh(
+            new THREE.BoxGeometry(20, 10, 1),
+            new THREE.MeshStandardMaterial({ color: 0x8B4513 })
+        );
+        wall.position.set(w.x, 4, w.z);
+        wall.rotation.y = w.ry;
+        scene.add(wall);
+        walls.push(wall);
+    }
+}
+
 // ── FLOOR ─────────────────────────────────────────────────────────────────────
 
 const floor = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), new THREE.MeshStandardMaterial({ color: 0x228B22 }));
@@ -441,7 +483,7 @@ document.getElementById('multiBtn').addEventListener('click', () => {
 });
 
 document.getElementById('createBtn').addEventListener('click', () => {
-    if (socket && socket.readyState === 1) socket.send(JSON.stringify({ type: 'createRoom' }));
+    if (socket && socket.readyState === 1) socket.send(JSON.stringify({ type: 'createRoom', walls: walls.map(w => ({ x: w.position.x, z: w.position.z, ry: w.rotation.y })) }));
 });
 
 document.getElementById('joinBtn').addEventListener('click', () => {
