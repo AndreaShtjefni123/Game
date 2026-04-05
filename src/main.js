@@ -9,7 +9,7 @@ import { npcs, createNPCs, updateNPCs, createBoss } from "./npc.js";
 // bullets array + shoot (fires on click) + updateBullets (moves them + checks hits)
 import { bullets, shoot, updateBullets, spawnRemoteBullet } from "./shoot.js";
 // Timer and kill counter — updateClock ticks every frame, addKill increments the counter
-import { updateClock, showFinalTime, showFinalKills, addKill, totalKills } from "./clock.js";
+import { updateClock, showFinalTime, showFinalKills, addKill, totalKills, survivalTime } from "./clock.js";
 // Player health system — takeDamage, healing, health bar UI, game over callback
 import { takeDamage, updateHealthBar, setDuckMesh, setGameOverCallback } from "./health.js";
 // Popcorn pickups that heal the player when touched
@@ -32,6 +32,10 @@ let isHost = false;
 // roomPlayers — list of player IDs in the waiting room
 const roomPlayers = [];
 
+// spectating — true when local player is dead but others are still alive
+let spectating = false;
+let spectateTargetId = null;
+
 // remotePlayers holds a Three.js Group for every OTHER player.
 // Key = their ID string, Value = their Group in the scene.
 const remotePlayers = {};
@@ -49,7 +53,7 @@ let lastSendTime = 0;
 // Opens the WebSocket and sets up all message handlers.
 // Only called when the player picks Play Together.
 function connectToServer() {
-    socket = new WebSocket(`wss://game-production-9138.up.railway.app`);
+    socket = new WebSocket(`ws://18.234.143.187:3000`);
 
     socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
@@ -74,6 +78,14 @@ function connectToServer() {
                 delete remotePlayers[data.id];
                 delete remotePlayerMixers[data.id];
             }
+            // If we were spectating this player, switch to any remaining player
+            if (spectating && spectateTargetId === data.id) {
+                const ids = Object.keys(remotePlayers);
+                spectateTargetId = ids.length > 0 ? ids[0] : null;
+                document.getElementById('spectateLabel').textContent = spectateTargetId
+                    ? 'Player ' + spectateTargetId.substring(0, 4)
+                    : 'No players alive';
+            }
         }
 
         // 'move' — another player moved, update their duck position
@@ -89,9 +101,19 @@ function connectToServer() {
             spawnRemoteBullet(data.x, data.z, data.dirX, data.dirZ, scene);
         }
 
-        // 'npcState' — server sends NPC positions, move existing fox meshes to match
+        // 'npcState' — server sent authoritative NPC positions; sync meshes to match
         if (data.type === 'npcState') {
-            for (let i = 0; i < data.npcs.length && i < npcs.length; i++) {
+            // Auto-create meshes for any new NPCs the server spawned
+            while (npcs.length < data.npcs.length) {
+                createNPCs(1, scene, player);
+            }
+            // Remove excess NPC meshes if server killed some
+            while (npcs.length > data.npcs.length) {
+                scene.remove(npcs[npcs.length - 1]);
+                npcs.splice(npcs.length - 1, 1);
+            }
+            // Sync all positions from server
+            for (let i = 0; i < data.npcs.length; i++) {
                 npcs[i].userData.serverId = data.npcs[i].id;
                 npcs[i].position.set(data.npcs[i].x, 0, data.npcs[i].z);
             }
@@ -121,9 +143,12 @@ function connectToServer() {
         // 'joinSuccess' — code was valid, show waiting room as non-host
         if (data.type === 'joinSuccess') {
             isHost = false;
+            // Add everyone already in the room, then ourselves
+            for (const pid of data.existingPlayers) roomPlayers.push(pid);
             roomPlayers.push(myId);
             document.getElementById('mainMenu').style.display = 'none';
             document.getElementById('waitingRoom').style.display = 'flex';
+            document.getElementById('roomCodeDisplay').textContent = 'Room Code: ' + data.code;
             updateWaitingRoom();
         }
 
@@ -137,6 +162,41 @@ function connectToServer() {
         if (data.type === 'gameStart') {
             document.getElementById('waitingRoom').style.display = 'none';
             startGame();
+        }
+
+        // 'leaderboard' — all players died, show results table
+        if (data.type === 'leaderboard') {
+            spectating = false;
+            spectateTargetId = null;
+            document.getElementById('spectateOverlay').style.display = 'none';
+            const tbody = document.getElementById('leaderboardBody');
+            tbody.innerHTML = '';
+            data.results.forEach((r, i) => {
+                const row = document.createElement('tr');
+                row.style.cssText = r.id === myId
+                    ? 'color:#ffdd00; font-weight:bold;'
+                    : 'color:white;';
+                row.innerHTML = `
+                    <td style="padding:10px;">${i + 1}</td>
+                    <td style="padding:10px;">Player ${r.id.substring(0, 4)}${r.id === myId ? ' (you)' : ''}</td>
+                    <td style="padding:10px;">${r.kills}</td>
+                    <td style="padding:10px;">${r.time}s</td>
+                `;
+                tbody.appendChild(row);
+            });
+            document.getElementById('leaderboard').style.display = 'flex';
+            document.getElementById('restartWaiting').style.display = 'block';
+            document.getElementById('restartWaiting').textContent = '0 / ' + data.results.length + ' want to play again';
+        }
+
+        // 'restartVote' — someone pressed Start Again, show progress
+        if (data.type === 'restartVote') {
+            document.getElementById('restartWaiting').textContent = data.votes + ' / ' + data.total + ' want to play again';
+        }
+
+        // 'restartGame' — all players voted, reload to restart fresh
+        if (data.type === 'restartGame') {
+            window.location.reload();
         }
     };
 
@@ -481,14 +541,41 @@ document.getElementById('joinBtn').addEventListener('click', () => {
 let gameOver = false;
 
 // Called by health.js when player HP reaches 0
-// Stops the game loop and shows the game over screen
 function triggerGameOver() {
     gameOver = true;
-    showFinalTime();  // display how long the player survived
-    showFinalKills(); // display final kill count
-    document.getElementById('gameOver').style.display = 'flex';
+    showFinalTime();
+    showFinalKills();
+    if (isMultiplayer && socket && socket.readyState === 1) {
+        socket.send(JSON.stringify({
+            type: 'playerDied',
+            kills: totalKills,
+            time: Math.floor(survivalTime)
+        }));
+        // Switch to spectate — follow a surviving player
+        spectating = true;
+        const ids = Object.keys(remotePlayers);
+        spectateTargetId = ids.length > 0 ? ids[0] : null;
+        const overlay = document.getElementById('spectateOverlay');
+        overlay.style.display = 'flex';
+        document.getElementById('spectateLabel').textContent = spectateTargetId
+            ? 'Player ' + spectateTargetId.substring(0, 4)
+            : 'No players alive';
+        document.getElementById('spectateStats').textContent =
+            `Your score: ${totalKills} kills — ${Math.floor(survivalTime)}s`;
+    } else {
+        document.getElementById('gameOver').style.display = 'flex';
+    }
 }
 setGameOverCallback(triggerGameOver); // register so health.js can call it
+
+// Start Again button — tells the server we want to restart
+document.getElementById('restartBtn').addEventListener('click', () => {
+    if (socket && socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: 'requestRestart' }));
+        document.getElementById('restartBtn').disabled = true;
+        document.getElementById('restartBtn').textContent = 'Waiting...';
+    }
+});
 
 // ── GAME LOOP ─────────────────────────────────────────────────────────────────
 
@@ -496,24 +583,33 @@ setGameOverCallback(triggerGameOver); // register so health.js can call it
 // Everything that moves or changes each frame is updated here
 function animate() {
     requestAnimationFrame(animate); // schedules the next frame
-    if (gameOver) return;           // stop updating everything once the game ends
     if (!modelLoaded) return;       // don't start until the duck model has loaded
 
     // delta = seconds since the last frame (usually ~0.016 at 60fps)
-    // Used for timers so they run at the same speed regardless of frame rate
     const now = performance.now();
     const delta = (now - lastTime) / 1000;
     lastTime = now;
 
-    updateClock(); // tick the survival timer and update its DOM element
-
-    // Advance the player's waddle animation
+    // Always advance animation mixers — remote ducks animate even while spectating
     if (mixer) mixer.update(delta);
+    for (const id in remotePlayerMixers) remotePlayerMixers[id].update(delta);
 
-    // Advance each remote player's waddle animation independently
-    for (const id in remotePlayerMixers) {
-        remotePlayerMixers[id].update(delta);
+    // Spectate mode — just follow the target player and render, skip all game logic
+    if (spectating) {
+        if (spectateTargetId && remotePlayers[spectateTargetId]) {
+            const pos = remotePlayers[spectateTargetId].position;
+            camera.position.x = pos.x;
+            camera.position.z = pos.z;
+            controls.target.copy(pos);
+        }
+        controls.update();
+        renderer.render(scene, camera);
+        return;
     }
+
+    if (gameOver) return;           // solo game over — stop all updates
+
+    updateClock(); // tick the survival timer and update its DOM element
 
     // Save player position before movement — used to revert if a wall is hit
     const previousPosition = player.position.clone();

@@ -36,3 +36,11 @@ export function setKills(amount) {
 export function showFinalKills() {
     document.getElementById('finalKills').textContent = 'Kills: ' + totalKills;
 }
+
+// Resets both the timer and kill counter to zero — used when restarting a multiplayer round
+export function resetClock() {
+    survivalTime = 0;
+    totalKills = 0;
+    document.getElementById('timer').textContent = 'Time: 0s';
+    document.getElementById('kills').textContent = 'Kills: 0';
+}
