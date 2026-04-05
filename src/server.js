@@ -66,7 +66,7 @@ function updateNPCs(room) {
         const dz = targetZ - npc.z;
         const len = Math.sqrt(dx * dx + dz * dz);
         if (len > 0.1) {
-            const speed = 0.10;
+            const speed = 0.30; // 0.10/frame at 60fps = 6 units/sec; 0.30/tick at 20fps = 6 units/sec
             npc.x += (dx / len) * speed;
             npc.z += (dz / len) * speed;
         }
@@ -119,6 +119,7 @@ wss.on('connection', (socket) => {
                 return;
             }
             room.players.push(id);
+            room.playerPositions[id] = { x: 0, z: 0 }; // seed position so NPCs target them immediately
             socket.send(JSON.stringify({
                 type: 'joinSuccess',
                 code: data.code,

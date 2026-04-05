@@ -152,7 +152,7 @@ export function updateBullets(bullets, npcs, walls, scene) {
                         killsThisFrame++; // count boss kill for the level-up check
                     }
                 } else {
-                    // Regular fox — one hit kill
+                    // Regular fox — one hit kill, remove immediately
                     scene.remove(npcs[j]);
                     npcs.splice(j, 1);
                     killsThisFrame++;

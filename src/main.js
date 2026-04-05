@@ -20,6 +20,7 @@ const roomPlayers = [];
 let spectating = false;
 let spectateTargetId = null;
 const remotePlayers = {};
+const killedNpcIds = new Set(); // NPCs we killed locally — suppress npcState re-spawning them
 const remotePlayerMixers = {};
 
 // We send our position 20 times per second (every 50 ms).
@@ -70,26 +71,53 @@ function connectToServer() {
         }
 
         if (data.type === 'npcState') {
-            while (npcs.length < data.npcs.length) createNPCs(1, scene, player);
-            while (npcs.length > data.npcs.length) {
-                scene.remove(npcs[npcs.length - 1]);
-                npcs.splice(npcs.length - 1, 1);
+            // Build a lookup of what the server currently has (by id)
+            const serverMap = new Map(data.npcs.map(n => [n.id, n]));
+
+            // Clean up killedNpcIds — once server stops sending the ID, kill is confirmed
+            for (const id of killedNpcIds) {
+                if (!serverMap.has(id)) killedNpcIds.delete(id);
             }
-            for (let i = 0; i < data.npcs.length; i++) {
-                npcs[i].userData.serverId = data.npcs[i].id;
-                npcs[i].position.set(data.npcs[i].x, 0, data.npcs[i].z);
+
+            // Remove any local NPCs the server no longer has
+            for (let i = npcs.length - 1; i >= 0; i--) {
+                if (!serverMap.has(npcs[i].userData.serverId)) {
+                    scene.remove(npcs[i]);
+                    npcs.splice(i, 1);
+                }
+            }
+
+            // Build a lookup of what we have locally (by serverId)
+            const localMap = new Map(npcs.map(n => [n.userData.serverId, n]));
+
+            // Update existing ones and spawn missing ones
+            for (const serverNpc of data.npcs) {
+                // Skip NPCs we already killed locally — don't let them pulse back
+                if (killedNpcIds.has(serverNpc.id)) continue;
+
+                if (localMap.has(serverNpc.id)) {
+                    // Already have this fox — store as target for smooth lerp this frame
+                    const existing = localMap.get(serverNpc.id);
+                    existing.userData.targetX = serverNpc.x;
+                    existing.userData.targetZ = serverNpc.z;
+                } else {
+                    // Server added a new fox we don't have yet — spawn and tag it
+                    createNPCs(1, scene, player);
+                    const newNpc = npcs[npcs.length - 1];
+                    newNpc.userData.serverId = serverNpc.id;
+                    newNpc.position.set(serverNpc.x, 0, serverNpc.z); // snap on first spawn
+                    newNpc.userData.targetX = serverNpc.x;
+                    newNpc.userData.targetZ = serverNpc.z;
+                }
             }
         }
 
         if (data.type === 'killUpdate') {
-            setKills(data.kills);
+            // Only sync the level — kills are tracked individually per player, not shared
             document.getElementById('level').textContent = 'Level ' + data.level;
         }
 
-        if (data.type === 'kill') {
-            const idx = npcs.findIndex(n => n.userData.serverId === data.npcId);
-            if (idx !== -1) { scene.remove(npcs[idx]); npcs.splice(idx, 1); }
-        }
+        // 'kill' handler removed — npcState is now the sole authority on NPC removal
 
         if (data.type === 'roomCreated') {
             isHost = true;
@@ -104,7 +132,10 @@ function connectToServer() {
 
         if (data.type === 'joinSuccess') {
             isHost = false;
-            for (const pid of data.existingPlayers) roomPlayers.push(pid);
+            for (const pid of data.existingPlayers) {
+                roomPlayers.push(pid);
+                spawnRemotePlayer(pid); // spawn a mesh for each player already in the room (e.g. the host)
+            }
             roomPlayers.push(myId);
             document.getElementById('mainMenu').style.display = 'none';
             document.getElementById('waitingRoom').style.display = 'flex';
@@ -153,8 +184,18 @@ function connectToServer() {
         }
     };
 
-    socket.onopen = () => console.log('WebSocket connected to server');
-    socket.onerror = (e) => console.warn('WebSocket error:', e);
+    socket.onopen = () => {
+        console.log('WebSocket connected to server');
+        // Enable the multiplayer buttons now that we're connected
+        document.getElementById('createBtn').disabled = false;
+        document.getElementById('joinBtn').disabled = false;
+        document.getElementById('createBtn').innerText = 'Create Party';
+    };
+    socket.onerror = (e) => {
+        console.warn('WebSocket error:', e);
+        // Inform the user if the server is offline or unreachable
+        document.getElementById('createBtn').innerText = 'Server Offline';
+    };
     socket.onclose = () => console.log('Disconnected from server');
 }
 
@@ -327,10 +368,12 @@ scene.add(sunLight);
 
 const keys = {};
 window.addEventListener('keydown', (e) => keys[e.key] = true);
-window.addEventListener('keyup',   (e) => keys[e.key] = false);
+window.addEventListener('keyup', (e) => keys[e.key] = false);
+
+let gameStarted = false;
 
 window.addEventListener('mousedown', (e) => {
-    if (e.button === 0) {
+    if (e.button === 0 && gameStarted && !gameOver) { // only shoot when game is actually running
         const shotData = shoot(e, camera, player, scene);
         if (isMultiplayer && socket && socket.readyState === 1 && shotData) {
             socket.send(JSON.stringify({ type: 'shoot', ...shotData }));
@@ -344,11 +387,11 @@ camera.position.set(0, 40, 0);
 camera.lookAt(0, 0, 0);
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.enablePan    = false;
+controls.enablePan = false;
 controls.enableRotate = false;
-controls.enableZoom   = true;
-controls.minDistance  = 10;
-controls.maxDistance  = 80;
+controls.enableZoom = true;
+controls.minDistance = 10;
+controls.maxDistance = 80;
 
 // ── GAME INIT ─────────────────────────────────────────────────────────────────
 
@@ -373,6 +416,7 @@ function startGame() {
     if (!isMultiplayer) createNPCs(3, scene, player);
     startPickupSpawner(scene, walls);
     initUltimate(scene, player, npcs);
+    gameStarted = true; // now clicks fire bullets
     animate();
 }
 
@@ -389,6 +433,11 @@ document.getElementById('multiBtn').addEventListener('click', () => {
     document.getElementById('roomOptions').style.display = 'flex';
     document.getElementById('soloBtn').style.display = 'none';
     document.getElementById('multiBtn').style.display = 'none';
+
+    // Disable the multiplayer buttons while connecting
+    document.getElementById('createBtn').disabled = true;
+    document.getElementById('joinBtn').disabled = true;
+    document.getElementById('createBtn').innerText = 'Connecting...';
 });
 
 document.getElementById('createBtn').addEventListener('click', () => {
@@ -503,7 +552,26 @@ function animate() {
         return;
     }
 
-    if (!isMultiplayer) updateNPCs(npcs, player, playerBox, walls, delta, scene);
+    if (!isMultiplayer) {
+        updateNPCs(npcs, player, playerBox, walls, delta, scene);
+    } else {
+        // Smoothly interpolate every fox toward the server-authoritative target position
+        // and update their rotation so they always face the direction they're moving
+        const LERP = 0.2; // 0 = never moves, 1 = instant snap — 0.2 gives smooth motion
+        for (const npc of npcs) {
+            if (npc.userData.targetX === undefined) continue;
+            const prevX = npc.position.x;
+            const prevZ = npc.position.z;
+            npc.position.x += (npc.userData.targetX - npc.position.x) * LERP;
+            npc.position.z += (npc.userData.targetZ - npc.position.z) * LERP;
+            // Rotate to face movement direction (same formula as solo npc.js)
+            const dx = npc.position.x - prevX;
+            const dz = npc.position.z - prevZ;
+            if (Math.abs(dx) > 0.0001 || Math.abs(dz) > 0.0001) {
+                npc.rotation.y = Math.atan2(dx, dz) + Math.PI;
+            }
+        }
+    }
 
     for (let i = 0; i < npcs.length; i++) {
         if (new THREE.Box3().setFromObject(npcs[i]).intersectsBox(playerBox)) {
@@ -529,7 +597,11 @@ function animate() {
         } else if (socket && socket.readyState === 1) {
             const npcIdsAfter = new Set(npcs.map((n, i) => n.userData.serverId ?? i));
             for (const npcId of npcIdsBefore) {
-                if (!npcIdsAfter.has(npcId)) socket.send(JSON.stringify({ type: 'kill', npcId }));
+                if (!npcIdsAfter.has(npcId)) {
+                    killedNpcIds.add(npcId); // suppress npcState from re-spawning this fox
+                    addKill(); // count this kill toward YOUR personal score
+                    socket.send(JSON.stringify({ type: 'kill', npcId }));
+                }
             }
         }
     }
