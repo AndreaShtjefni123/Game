@@ -7,7 +7,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 // NPC array + functions to create and update foxes/boss each frame
 import { npcs, createNPCs, updateNPCs, createBoss } from "./npc.js";
 // bullets array + shoot (fires on click) + updateBullets (moves them + checks hits)
-import { bullets, shoot, updateBullets, spawnRemoteBullet, spawnBossBullet } from "./shoot.js";
+import { bullets, shoot, updateBullets, spawnRemoteBullet } from "./shoot.js";
 // Timer and kill counter — updateClock ticks every frame, addKill increments the counter
 import { updateClock, showFinalTime, showFinalKills, addKill, totalKills } from "./clock.js";
 // Player health system — takeDamage, healing, health bar UI, game over callback
@@ -15,7 +15,7 @@ import { takeDamage, updateHealthBar, setDuckMesh, setGameOverCallback } from ".
 // Popcorn pickups that heal the player when touched
 import { updatePickups, startPickupSpawner } from "./pickup.js";
 // Level progression — checks kill count and triggers level-up when target is hit
-import { checkLevelUp, getCurrentLevel, setBossSpawnHandler } from "./levels.js";
+import { checkLevelUp, getCurrentLevel } from "./levels.js";
 // Ultimate ability — charges over time, fires mini ducks on Q press
 import { initUltimate, updateUltimate } from "./ultimate.js";
 
@@ -27,6 +27,10 @@ let isMultiplayer = false;
 let socket = null;
 // myId stays null until the server tells us who we are
 let myId = null;
+// isHost — true if this player created the room
+let isHost = false;
+// roomPlayers — list of player IDs in the waiting room
+const roomPlayers = [];
 
 // remotePlayers holds a Three.js Group for every OTHER player.
 // Key = their ID string, Value = their Group in the scene.
@@ -56,8 +60,10 @@ function connectToServer() {
             console.log('Connected! My ID:', myId);
         }
 
-        // 'playerJoined' — a new browser connected, create a duck for them
+        // 'playerJoined' — a new player joined the room
         if (data.type === 'playerJoined') {
+            roomPlayers.push(data.id);
+            updateWaitingRoom();
             spawnRemotePlayer(data.id);
         }
 
@@ -86,12 +92,12 @@ function connectToServer() {
         // 'npcState' — server sends NPC positions, move existing fox meshes to match
         if (data.type === 'npcState') {
             for (let i = 0; i < data.npcs.length && i < npcs.length; i++) {
-                npcs[i].userData.serverId = data.npcs[i].id; // store server ID so we can reference it on kill
+                npcs[i].userData.serverId = data.npcs[i].id;
                 npcs[i].position.set(data.npcs[i].x, 0, data.npcs[i].z);
             }
         }
 
-        // 'kill' — another player killed a fox, remove it from our scene
+        // 'kill' — another player killed a fox, remove it from our scene (kills are independent)
         if (data.type === 'kill') {
             const idx = npcs.findIndex(n => n.userData.serverId === data.npcId);
             if (idx !== -1) {
@@ -100,35 +106,37 @@ function connectToServer() {
             }
         }
 
-        // 'bossSpawned' — server confirmed boss exists, create the mesh locally
-        if (data.type === 'bossSpawned') {
-            createBoss(scene, player);
-            document.getElementById('bossBarContainer').style.display = 'block';
+        // 'roomCreated' — server confirmed room, show waiting room as host
+        if (data.type === 'roomCreated') {
+            isHost = true;
+            roomPlayers.push(myId);
+            document.getElementById('mainMenu').style.display = 'none';
+            document.getElementById('waitingRoom').style.display = 'flex';
+            document.getElementById('roomCodeDisplay').textContent = 'Room Code: ' + data.code;
+            document.getElementById('startBtn').style.display = 'block';
+            document.getElementById('waitingMsg').style.display = 'none';
+            updateWaitingRoom();
         }
 
-        // 'bossHp' — another player hit the boss, sync the health bar
-        if (data.type === 'bossHp') {
-            const boss = npcs.find(n => n.userData.isBoss);
-            if (boss) {
-                boss.userData.hp = data.hp;
-                const pct = (data.hp / 100) * 100;
-                document.getElementById('bossBarInner').style.width = pct + '%';
-            }
+        // 'joinSuccess' — code was valid, show waiting room as non-host
+        if (data.type === 'joinSuccess') {
+            isHost = false;
+            roomPlayers.push(myId);
+            document.getElementById('mainMenu').style.display = 'none';
+            document.getElementById('waitingRoom').style.display = 'flex';
+            updateWaitingRoom();
         }
 
-        // 'bossDied' — boss was killed by another player, remove it from our scene
-        if (data.type === 'bossDied') {
-            const idx = npcs.findIndex(n => n.userData.isBoss);
-            if (idx !== -1) {
-                scene.remove(npcs[idx]);
-                npcs.splice(idx, 1);
-            }
-            document.getElementById('bossBarContainer').style.display = 'none';
+        // 'joinFailed' — wrong code, show error
+        if (data.type === 'joinFailed') {
+            document.getElementById('joinError').textContent = data.reason || 'Room not found. Check the code and try again.';
+            document.getElementById('joinError').style.display = 'block';
         }
 
-        // 'bossShoot' — server fired a boss bullet, spawn it locally
-        if (data.type === 'bossShoot') {
-            spawnBossBullet(data.x, data.z, data.dirX, data.dirZ, scene);
+        // 'gameStart' — host pressed Start, everyone begins
+        if (data.type === 'gameStart') {
+            document.getElementById('waitingRoom').style.display = 'none';
+            startGame();
         }
     };
 
@@ -412,12 +420,32 @@ controls.maxDistance = 80;    // farthest zoom
 
 // ── GAME INIT ─────────────────────────────────────────────────────────────────
 
+// Updates the player list shown in the waiting room
+function updateWaitingRoom() {
+    const list = document.getElementById('waitingPlayerList');
+    list.innerHTML = '';
+    roomPlayers.forEach((pid, i) => {
+        const entry = document.createElement('div');
+        entry.style.cssText = 'background:rgba(255,255,255,0.1); border-radius:6px; padding:10px 16px; color:white; font-size:16px;';
+        entry.textContent = (i === 0 ? 'Host' : 'Player ' + (i + 1)) + ' — ' + pid.substring(0, 6);
+        list.appendChild(entry);
+    });
+}
+
+// Start Game button — host only, tells server to begin for everyone
+document.getElementById('startBtn').addEventListener('click', () => {
+    if (socket && socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: 'startGame' }));
+    }
+});
+
 function startGame() {
     document.getElementById('mainMenu').style.display = 'none';
-    createNPCs(3, scene, player);       // spawn 3 foxes to start the game
-    startPickupSpawner(scene, walls);   // begin the popcorn pickup spawn loop
-    initUltimate(scene, player, npcs);  // set up the Q ultimate ability
-    animate();                          // kick off the game loop
+    document.getElementById('waitingRoom').style.display = 'none';
+    if (!isMultiplayer) createNPCs(3, scene, player); // solo: spawn locally; multiplayer: server owns NPCs
+    startPickupSpawner(scene, walls);
+    initUltimate(scene, player, npcs);
+    animate();
 }
 
 // Solo button — no server, local AI runs as normal
@@ -426,17 +454,28 @@ document.getElementById('soloBtn').addEventListener('click', () => {
     startGame();
 });
 
-// Play Together button — connect to server, server will drive NPCs
+// Play Together — connect then show Create/Join options
 document.getElementById('multiBtn').addEventListener('click', () => {
     isMultiplayer = true;
     connectToServer();
-    // In multiplayer, tell the server to spawn the boss instead of doing it locally
-    setBossSpawnHandler(() => {
-        if (socket && socket.readyState === 1) {
-            socket.send(JSON.stringify({ type: 'spawnBoss' }));
-        }
-    });
-    startGame();
+    document.getElementById('roomOptions').style.display = 'flex';
+    document.getElementById('soloBtn').style.display = 'none';
+    document.getElementById('multiBtn').style.display = 'none';
+});
+
+// Create Room — server replies with roomCreated → waiting room shown
+document.getElementById('createBtn').addEventListener('click', () => {
+    if (socket && socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: 'createRoom' }));
+    }
+});
+
+// Join Room — server replies with joinSuccess or joinFailed
+document.getElementById('joinBtn').addEventListener('click', () => {
+    const code = document.getElementById('codeInput').value.trim().toUpperCase();
+    if (code && socket && socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: 'joinRoom', code }));
+    }
 });
 
 let gameOver = false;
@@ -570,9 +609,7 @@ function animate() {
 
     const SPAWN_PER_KILL = 2; // how many new foxes spawn when a fox is killed
     const MAX_FOXES = 20;     // hard cap — never more than 20 NPCs on screen at once
-    // Snapshot boss HP and server IDs before updateBullets so we can detect hits and kills
-    const bossBefore = npcs.find(n => n.userData.isBoss);
-    const bossHpBefore = bossBefore ? bossBefore.userData.hp : null;
+    // Snapshot server IDs before updateBullets so we can detect which foxes were killed
     const npcIdsBefore = npcs.map(n => n.userData.serverId);
     // Move all bullets forward and check if they hit a wall or NPC
     // Returns how many NPCs were killed this frame
@@ -592,18 +629,6 @@ function animate() {
             for (const npcId of npcIdsBefore) {
                 if (npcId !== undefined && !npcIdsAfter.has(npcId)) {
                     socket.send(JSON.stringify({ type: 'kill', npcId }));
-                }
-            }
-
-            // Tell server if boss was hit or killed so HP stays in sync for everyone
-            if (bossHpBefore !== null) {
-                const bossAfter = npcs.find(n => n.userData.isBoss);
-                if (!bossAfter) {
-                    // Boss died on our end — tell server
-                    socket.send(JSON.stringify({ type: 'bossHit' }));
-                } else if (bossAfter.userData.hp !== bossHpBefore) {
-                    // Boss took damage — tell server
-                    socket.send(JSON.stringify({ type: 'bossHit' }));
                 }
             }
         }

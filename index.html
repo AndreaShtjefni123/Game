@@ -36,7 +36,46 @@
         background: transparent; color: #ffdd00;
         box-shadow: 0 4px 12px rgba(255,200,0,0.2);
       ">Play Together</button>
+
+      <!-- Room options — shown after clicking Play Together -->
+      <div id="roomOptions" style="display:none; flex-direction:column; gap:10px;">
+        <button id="createBtn" style="
+          padding: 14px; font-size: 18px; font-weight: bold; cursor: pointer;
+          border: none; border-radius: 8px; background: #ffdd00; color: black;
+        ">Create Party</button>
+        <div style="display:flex; gap:8px;">
+          <input id="codeInput" placeholder="Enter code..." maxlength="6" style="
+            flex:1; padding:12px; font-size:16px; border-radius:8px;
+            border:2px solid #ffdd00; background:rgba(0,0,0,0.5);
+            color:white; text-align:center; letter-spacing:4px; text-transform:uppercase;
+          "/>
+          <button id="joinBtn" style="
+            padding:12px 16px; font-size:16px; font-weight:bold; cursor:pointer;
+            border:none; border-radius:8px; background:#ffdd00; color:black;
+          ">Join</button>
+        </div>
+        <p id="joinError" style="display:none; color:#ff4444; margin:0; font-size:14px; text-align:center;"></p>
+      </div>
     </div>
+  </div>
+
+  <!-- Waiting Room overlay -->
+  <div id="waitingRoom" style="
+    display:none; position:absolute; top:0; left:0; width:100%; height:100%;
+    background:rgba(0,0,0,0.9); flex-direction:column; align-items:center;
+    justify-content:center; font-family:Arial,sans-serif; z-index:100;
+  ">
+    <h2 style="color:#ffdd00; font-size:40px; margin:0 0 8px 0; text-shadow:0 0 16px #ffaa00;">Waiting Room</h2>
+    <p id="roomCodeDisplay" style="color:white; font-size:20px; margin:0 0 30px 0; letter-spacing:2px;"></p>
+    <div id="waitingPlayerList" style="
+      display:flex; flex-direction:column; gap:10px; width:300px; margin-bottom:30px;
+    "></div>
+    <p id="waitingMsg" style="color:rgba(255,255,255,0.6); font-size:16px; margin:0 0 20px 0;">Waiting for host to start...</p>
+    <button id="startBtn" style="
+      display:none; padding:16px 40px; font-size:20px; font-weight:bold; cursor:pointer;
+      border:none; border-radius:8px; background:#ffdd00; color:black;
+      box-shadow:0 4px 12px rgba(255,200,0,0.4);
+    ">Start Game</button>
   </div>
 
   <div id="gameOver"

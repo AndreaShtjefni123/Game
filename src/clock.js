@@ -28,7 +28,10 @@ export function addKill() {
     totalKills++;  // increment total
     document.getElementById('kills').textContent = 'Kills: ' + totalKills; // update HUD display
 }
-
+export function setKills(amount) {
+    totalKills = amount;
+    document.getElementById('kills').textContent = 'Kills: ' + totalKills;
+}
 // Called on game over — displays the final kill count on the game over screen
 export function showFinalKills() {
     document.getElementById('finalKills').textContent = 'Kills: ' + totalKills;
