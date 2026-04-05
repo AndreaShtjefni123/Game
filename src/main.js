@@ -22,7 +22,7 @@ let spectating = false;
 let spectateTargetId = null;
 const remotePlayers = {};
 const killedNpcIds = new Set(); // NPCs we killed locally — suppress npcState re-spawning them
-const remotePlayerMixers = {};
+
 
 // We send our position 20 times per second (every 50 ms).
 // Sending every frame (60/s) would flood the server needlessly.
@@ -173,10 +173,10 @@ function connectToServer() {
             document.getElementById('joinError').style.display = 'block';
         }
 
-      if (data.type === 'gameStart') {
-        document.getElementById('waitingRoom').style.display = 'none';
-        if (serverWalls) placeWallsFromServer(serverWalls);
-        startGame();
+        if (data.type === 'gameStart') {
+            document.getElementById('waitingRoom').style.display = 'none';
+            if (serverWalls) placeWallsFromServer(serverWalls);
+            startGame();
         }
 
         if (data.type === 'leaderboard') {
@@ -366,6 +366,7 @@ function createWalls(amount) {
 
         scene.add(wall);
         walls.push(wall);
+        wall.userData.box = new THREE.Box3().setFromObject(wall); // cached — walls never move
     }
 }
 createWalls(10);
@@ -383,6 +384,7 @@ function placeWallsFromServer(wallData) {
         wall.rotation.y = w.ry;
         scene.add(wall);
         walls.push(wall);
+        wall.userData.box = new THREE.Box3().setFromObject(wall); // cached — walls never move
     }
 }
 
@@ -525,6 +527,11 @@ document.getElementById('joinBtn').addEventListener('click', () => {
 
 let gameOver = false;
 
+// Reusable Box3 instances — avoids creating hundreds of throwaway objects per second
+const playerBox = new THREE.Box3();
+const _playerSize = new THREE.Vector3(1.5, 2, 1.5);
+const _npcBox = new THREE.Box3();
+
 function triggerGameOver() {
     gameOver = true;
     showFinalTime();
@@ -609,9 +616,9 @@ function animate() {
         player.rotation.y = Math.atan2(moveDir.x, moveDir.z);
     }
 
-    const playerBox = new THREE.Box3().setFromCenterAndSize(player.position, new THREE.Vector3(1.5, 2, 1.5));
+    playerBox.setFromCenterAndSize(player.position, _playerSize);
     for (let i = 0; i < walls.length; i++) {
-        if (playerBox.intersectsBox(new THREE.Box3().setFromObject(walls[i]))) {
+        if (playerBox.intersectsBox(walls[i].userData.box)) {
             player.position.copy(previousPosition);
             break;
         }
@@ -646,9 +653,13 @@ function animate() {
             }
         }
     }
+    //Creates an invisible box around each fox, 
+    //then checks if it overlaps with the bullet box. 
+    //If they overlap — that's a hit.
+
 
     for (let i = 0; i < npcs.length; i++) {
-        if (new THREE.Box3().setFromObject(npcs[i]).intersectsBox(playerBox)) {
+        if (_npcBox.setFromObject(npcs[i]).intersectsBox(playerBox)) {
             takeDamage(20);
             break;
         }

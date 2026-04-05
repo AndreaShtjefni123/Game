@@ -6,6 +6,10 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 // Shared array of all active bullets — main.js reads this to pass into updateBullets
 export const bullets = [];
 
+// Reusable Box3 instances for bullet/wall/NPC collision — avoids per-frame allocations
+const _bulletBox = new THREE.Box3();
+const _npcBox = new THREE.Box3();
+
 // Raycaster projects a ray from the camera through the mouse position into the 3D world
 const raycaster = new THREE.Raycaster();
 // An invisible flat plane at y=0 — the raycaster hits this to find where the mouse points in 3D
@@ -109,13 +113,12 @@ export function updateBullets(bullets, npcs, walls, scene) {
         bullet.mesh.position.addScaledVector(bullet.dir, bullet.speed ?? 0.4);
 
         // Build a bounding box around the bullet for collision detection
-        const bulletBox = new THREE.Box3().setFromObject(bullet.mesh);
+        _bulletBox.setFromObject(bullet.mesh);
 
         // ── WALL CHECK ────────────────────────────────────────────────────────
         let hitWall = false;
         for (let w = 0; w < walls.length; w++) {
-            const wallBox = new THREE.Box3().setFromObject(walls[w]);
-            if (bulletBox.intersectsBox(wallBox)) {
+            if (_bulletBox.intersectsBox(walls[w].userData.box)) {
                 scene.remove(bullet.mesh); // remove the mesh from the scene
                 bullets.splice(i, 1);      // remove from the array
                 hitWall = true;
@@ -132,8 +135,7 @@ export function updateBullets(bullets, npcs, walls, scene) {
         // ── NPC CHECK ─────────────────────────────────────────────────────────
         let hitNPC = false;
         for (let j = npcs.length - 1; j >= 0; j--) {
-            const npcBox = new THREE.Box3().setFromObject(npcs[j]);
-            if (bulletBox.intersectsBox(npcBox)) {
+            if (_bulletBox.intersectsBox(_npcBox.setFromObject(npcs[j]))) {
                 scene.remove(bullet.mesh); // destroy the bullet
                 bullets.splice(i, 1);
                 hitNPC = true;

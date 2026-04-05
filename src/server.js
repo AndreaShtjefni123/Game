@@ -1,6 +1,10 @@
 import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 
+// Keep the process alive if an unexpected error slips through
+process.on('uncaughtException',  (err) => console.error('Uncaught exception:', err));
+process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
+
 const httpServer = createServer();
 const wss = new WebSocketServer({ server: httpServer });
 
@@ -147,8 +151,9 @@ function updateNPCs(room, roomCode) {
             if (other.id === npc.id) continue;
             const sdx = npc.x - other.x;
             const sdz = npc.z - other.z;
-            const dist = Math.sqrt(sdx * sdx + sdz * sdz);
-            if (dist < 3 && dist > 0) {
+            const distSq = sdx * sdx + sdz * sdz;
+            if (distSq < 9 && distSq > 0) {
+                const dist = Math.sqrt(distSq); // only sqrt when foxes are actually close
                 const push = (3 - dist) * 0.05;
                 npc.x += (sdx / dist) * push;
                 npc.z += (sdz / dist) * push;
@@ -205,6 +210,7 @@ wss.on('connection', (socket) => {
     socket.send(JSON.stringify({ type: 'init', id }));
 
     socket.on('message', (raw) => {
+        try {
         const data = JSON.parse(raw);
 
         // Create a new room — seed it with NPCs and start the simulation loop
@@ -329,6 +335,9 @@ wss.on('connection', (socket) => {
         } else {
             const roomCode = getRoomCodeByPlayerId(id);
             if (roomCode) brodcast({ ...data, id }, id, roomCode);
+        }
+        } catch (err) {
+            console.error(`Bad message from player ${id}:`, err);
         }
     });
 

@@ -62,7 +62,7 @@ Each `requestAnimationFrame`:
 - **Player bullets**: travel 0.4 units/frame, destroyed on wall or NPC hit
 - **Boss bullets**: travel 0.7 units/frame, 2.5× bigger, deal 40 damage to player
 - **Player speed**: 0.18 units/frame
-- **Fox speed**: 0.10 units/frame (fixed)
+- **Fox speed**: 0.10 units/frame in solo; 0.30 units/tick at 20fps on server (equivalent speed)
 - **Fox cap**: max 20 foxes on screen at once to prevent lag
 - **Spawn**: starts with 3 foxes; each kill spawns 2 more (capped at 20 total)
 - **Camera**: top-down, follows player. OrbitControls for scroll zoom only (rotate disabled)
@@ -101,11 +101,6 @@ Boss alive     → +2 minions every 10s (only if under 20 cap)
 | 4→5   | 100 kills   | Boss fight |
 | 5+    | +30 each    | Boss fight |
 
-### Main Menu
-
-- **Play Solo** → `isMultiplayer = false`, no WebSocket, local AI runs via `updateNPCs()`
-- **Play Together** → `isMultiplayer = true`, connects to server, server drives NPCs
-
 Both modes call `startGame()` which spawns foxes, pickups, ultimate, and starts the game loop.
 
 ### Multiplayer (current state)
@@ -118,17 +113,29 @@ Both modes call `startGame()` which spawns foxes, pickups, ultimate, and starts 
 
 **What is shared in multiplayer:**
 - Player positions — each player sees other ducks with nametags and waddle animations
-- Fox positions — server runs AI loop every 50ms, broadcasts `npcState` to all clients
+- Fox positions — server runs AI loop every 50ms, broadcasts `npcState` to all clients; client uses Map keyed by `serverId` for matching
 - Bullets — when you shoot, direction is relayed to all players via `shoot` message; they spawn a local bullet mesh
-- Fox kills — when a fox is killed, `kill` message sent to server; server removes it from `gameState.npcs` and relays to all clients; each player's kill counter is independent
+- Fox kills — `kill` message sent to server; server removes from `gameState.npcs`, relays to all clients; `killedNpcIds` Set suppresses ghost respawning
+- **Level progression — shared**: server tracks combined kill count, broadcasts `levelUp` when `KILL_TARGETS = [15, 40, 70, 100]` is hit; all clients level up together
+- Wall layout — host generates walls, sends layout in `joinSuccess.walls`; joiner calls `placeWallsFromServer()` to match
 
 **Server internals (`src/server.js`):**
-- `gameState.npcs` — shared NPC list, source of truth for all players
+- `gameState.npcs` — shared NPC list, source of truth for all players; each NPC has a unique `id`
 - `spawnNPC(isBoss)` — adds fox or boss to shared list (3 called on boot)
-- `setInterval` game loop — moves each NPC toward nearest player, broadcasts `npcState` every 50ms
-- Handles `move`, `shoot`, `kill` messages — relays all to other players via `broadcast()`
+- `setInterval` game loop — moves each NPC toward nearest player at 0.30/tick, broadcasts `npcState` every 50ms
+- Handles `move`, `shoot`, `kill`, `levelUp` messages — relays to other players via `broadcast()`
+- `KILL_TARGETS` array drives shared level progression; boss spawns at level 5
+
+**Main Menu UI flow:**
+- **Play Solo** → `isMultiplayer = false`, no WebSocket, local AI runs via `updateNPCs()`
+- **Play Together** → connects to server, shows roomOptions screen
+  - **Create Party** — creates a room, waits in waitingRoom until partner joins
+  - **Join Party** (button) → reveals `joinCodePanel` (hides Create Party + Back button)
+    - Enter code + Join → joins room
+    - Back (in panel) → hides panel, restores Create Party + Back button
+  - **Back** (roomOptions) → closes socket, returns to main menu
+  - **Leave Room** (waitingRoom) → `window.location.reload()`
 
 **What is NOT yet shared:**
-- Boss — still local to each client
-- Kill/level progression — each client tracks independently
 - End-game leaderboard
+- Individual per-player kill counters (each client tracks its own)
