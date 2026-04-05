@@ -20,17 +20,11 @@ const roomPlayers = [];
 let spectating = false;
 let spectateTargetId = null;
 const remotePlayers = {};
-<<<<<<< HEAD
-
-
+const remotePlayerMixers = {};
 
 // We send our position 20 times per second (every 50 ms).
 // Sending every frame (60/s) would flood the server needlessly.
 const SEND_RATE = 50; // milliseconds
-=======
-const remotePlayerMixers = {};
-const SEND_RATE = 50;
->>>>>>> 3273d7372f3d71f40c53a3ea62dbe03840c5d81e
 let lastSendTime = 0;
 
 function connectToServer() {
@@ -176,16 +170,11 @@ function spawnRemotePlayer(id) {
         remoteDuck.scale.set(1.5, 1.5, 1.5);
         remoteDuck.rotation.y = Math.PI;
         group.add(remoteDuck);
-<<<<<<< HEAD
-
-
-=======
         if (remoteDuck.animations && remoteDuck.animations.length > 0) {
             const m = new THREE.AnimationMixer(remoteDuck);
             m.clipAction(remoteDuck.animations[0]).play();
             remotePlayerMixers[id] = m;
         }
->>>>>>> 3273d7372f3d71f40c53a3ea62dbe03840c5d81e
     } else {
         const geo = new THREE.BoxGeometry(1.5, 2, 1.5);
         const mat = new THREE.MeshStandardMaterial({ color: 0x00aaff });
@@ -239,14 +228,10 @@ scene.add(player);
 
 let modelLoaded = false;
 let lastTime = performance.now();
-<<<<<<< HEAD
-
-// Load the duck .glb model asynchronously
-=======
 let mixer = null;
 let waddleAction = null;
 
->>>>>>> 3273d7372f3d71f40c53a3ea62dbe03840c5d81e
+// Load the duck .glb model asynchronously
 const loader = new GLTFLoader();
 loader.load(
     "/scriptduck.glb",
@@ -272,8 +257,6 @@ loader.load(
             }
         }
 
-<<<<<<< HEAD
-=======
         if (gltf.animations && gltf.animations.length > 0) {
             console.log("🦆 Animations found:", gltf.animations.map(a => a.name));
             mixer = new THREE.AnimationMixer(duck);
@@ -282,7 +265,6 @@ loader.load(
         } else {
             console.warn("⚠️ No animations found in duck GLB.");
         }
->>>>>>> 3273d7372f3d71f40c53a3ea62dbe03840c5d81e
         console.log("✅ Duck model loaded!");
     },
     (progress) => { console.log(`Loading duck: ${Math.round((progress.loaded / progress.total) * 100)}%`); },
@@ -394,16 +376,12 @@ function startGame() {
     animate();
 }
 
-<<<<<<< HEAD
 // Solo button — no server, local AI runs as normal
 document.getElementById('soloBtn').addEventListener('click', () => { //browser API that finds an HTML element by its id
     //attribute and returns it so you can read or change it with JavaScript.
     isMultiplayer = false;
     startGame();
 });
-=======
-document.getElementById('soloBtn').addEventListener('click', () => { isMultiplayer = false; startGame(); });
->>>>>>> 3273d7372f3d71f40c53a3ea62dbe03840c5d81e
 
 document.getElementById('multiBtn').addEventListener('click', () => {
     isMultiplayer = true;
@@ -464,13 +442,10 @@ function animate() {
     const delta = (now - lastTime) / 1000;
     lastTime = now;
 
-<<<<<<< HEAD
-    // Spectate mode — just follow the target player and render, skip all game logic
-=======
     if (mixer) mixer.update(delta);
     for (const id in remotePlayerMixers) remotePlayerMixers[id].update(delta);
 
->>>>>>> 3273d7372f3d71f40c53a3ea62dbe03840c5d81e
+    // Spectate mode — just follow the target player and render, skip all game logic
     if (spectating) {
         if (spectateTargetId && remotePlayers[spectateTargetId]) {
             const pos = remotePlayers[spectateTargetId].position;
