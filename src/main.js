@@ -210,6 +210,9 @@ window.addEventListener('mousedown', (e) => {
             dir.y = 0;
             dir.normalize();
             pendingShoot = { dx: +dir.x.toFixed(3), dz: +dir.z.toFixed(3) };
+            // Spawn bullet locally so it's visible on the client immediately
+            // instead of waiting ~50ms for the host snapshot round-trip
+            shootFromRemote(player.position, dir.x, dir.z, scene);
         }
     }
 });
@@ -582,20 +585,17 @@ function clientUpdate(delta, now) {
     }
 
     // ── Local prediction (own movement) ──
+    // Uses fixed world-space directions to match host's processClientInputs exactly.
+    // Camera looks straight down so getWorldDirection() gives (0,-1,0) which
+    // zeroes out after y=0 — world-space is the correct approach here.
     _prevPos.copy(player.position);
-
-    camera.getWorldDirection(_camDir);
-    _camDir.y = 0;
-    _camDir.normalize();
-
-    _camRight.crossVectors(_camDir, new THREE.Vector3(0, 1, 0)).normalize();
 
     const speed = 0.18;
     _moveDir.set(0, 0, 0);
-    if (keys['w'] || keys['W']) _moveDir.addScaledVector(_camDir, 1);
-    if (keys['s'] || keys['S']) _moveDir.addScaledVector(_camDir, -1);
-    if (keys['a'] || keys['A']) _moveDir.addScaledVector(_camRight, -1);
-    if (keys['d'] || keys['D']) _moveDir.addScaledVector(_camRight, 1);
+    if (keys['w'] || keys['W']) _moveDir.z -= 1;
+    if (keys['s'] || keys['S']) _moveDir.z += 1;
+    if (keys['a'] || keys['A']) _moveDir.x -= 1;
+    if (keys['d'] || keys['D']) _moveDir.x += 1;
 
     if (_moveDir.lengthSq() > 0) {
         _moveDir.normalize();
@@ -609,6 +609,19 @@ function clientUpdate(delta, now) {
         if (_playerBox.intersectsBox(walls[i].userData.box)) {
             player.position.copy(_prevPos);
             break;
+        }
+    }
+
+    // ── Move locally-spawned client bullets for visual feedback ──
+    // These are bullets we spawned on click (in bullets[]) before the host confirms them.
+    // We just move them — no kill logic — syncBullets handles cleanup via _clientBullets.
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        b.mesh.position.addScaledVector(b.dir, 0.4);
+        // Remove if out of bounds so they don't accumulate forever
+        if (Math.abs(b.mesh.position.x) > 60 || Math.abs(b.mesh.position.z) > 60) {
+            scene.remove(b.mesh);
+            bullets.splice(i, 1);
         }
     }
 
