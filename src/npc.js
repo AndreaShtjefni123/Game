@@ -37,9 +37,9 @@ loader.load(
         console.log("✅ Fox template loaded — flushing", pendingSpawns.length, "queued spawns");
 
         // Flush any spawns that were requested before the model finished loading
-        for (const { scene, player, isBoss } of pendingSpawns) {
+       for (const { scene, player, isBoss, serverId } of pendingSpawns) {
             if (isBoss) _spawnBossNow(scene, player);
-            else _spawnFoxNow(scene, player);
+            else _spawnFoxNow(scene, player, serverId);
         }
         // Clear the queue
         pendingSpawns.length = 0;
@@ -70,19 +70,18 @@ function makeFallbackBox(scaleX, scaleY, scaleZ, color) {
 }
 
 // Spawns a single regular fox NPC into the scene
-function _spawnFoxNow(scene, player) {
-    // Clone the template if loaded, otherwise use a red fallback box
+function _spawnFoxNow(scene, player, serverId = null) {
     const npc = foxTemplate
-        ? foxTemplate.clone(true)               // clone(true) = deep clone, copies all children
+        ? foxTemplate.clone(true)
         : makeFallbackBox(1.5, 2, 1.5, 0xff0000);
 
-    npc.scale.set(3, 3, 3);                     // scale the fox up to game size
-    const { x, z } = randomPos(player);         // pick a spawn point far from the player
-    npc.position.set(x, 0, z);                  // place it in the world (y=0 = ground level)
-    scene.add(npc);                             // add to the Three.js scene so it renders
-    npcs.push(npc);                             // add to the shared npcs array so main.js tracks it
+    npc.scale.set(3, 3, 3);
+    const { x, z } = randomPos(player);
+    npc.position.set(x, 0, z);
+    if (serverId !== null) npc.userData.serverId = serverId;
+    scene.add(npc);
+    npcs.push(npc);
 }
-
 // Spawns the boss NPC — larger, slower, has HP, and fires back at the player
 function _spawnBossNow(scene, player) {
     // Clone the template if loaded, otherwise use a dark red fallback box
@@ -106,12 +105,12 @@ function _spawnBossNow(scene, player) {
 // ── PUBLIC API ────────────────────────────────────────────────────────────────
 
 // Called from main.js and levels.js to spawn a batch of regular foxes
-export function createNPCs(amount, scene, player) {
+export function createNPCs(amount, scene, player, serverId = null) {
     for (let i = 0; i < amount; i++) {
         if (foxTemplate) {
-            _spawnFoxNow(scene, player);        // model ready — spawn immediately
+            _spawnFoxNow(scene, player, serverId);
         } else {
-            pendingSpawns.push({ scene, player, isBoss: false }); // queue for later
+            pendingSpawns.push({ scene, player, isBoss: false, serverId });
         }
     }
 }

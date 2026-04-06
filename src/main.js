@@ -104,16 +104,14 @@ function connectToServer() {
                 } else {
                     // Server added a new NPC we don't have yet — spawn and tag it
                     if (serverNpc.isBoss) createBoss(scene, player);
-                    else createNPCs(1, scene, player);
+                    else createNPCs(1, scene, player, serverNpc.id);
                     const newNpc = npcs[npcs.length - 1];
-                    newNpc.userData.serverId = serverNpc.id;
-                    newNpc.position.set(serverNpc.x, 0, serverNpc.z); // snap on first spawn
+                    newNpc.position.set(serverNpc.x, 0, serverNpc.z);
                     newNpc.userData.targetX = serverNpc.x;
                     newNpc.userData.targetZ = serverNpc.z;
-                }
             }
         }
-
+    }
         if (data.type === 'killUpdate') {
             // Only sync the level — kills are tracked individually per player, not shared
             document.getElementById('level').textContent = 'Level ' + data.level;
