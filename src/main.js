@@ -21,14 +21,13 @@ const roomPlayers = [];
 let spectating = false;
 let spectateTargetId = null;
 const remotePlayers = {};
-const remotePlayerMixers = {};
 const killedNpcIds = new Set();
 
 const SEND_RATE = 50;
 let lastSendTime = 0;
 
 function connectToServer() {
-    socket = new WebSocket(`ws://18.234.143.187:3000`);
+    socket = new WebSocket(`ws://game.ferit.tech:3000`);
 
     socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
@@ -97,15 +96,16 @@ function connectToServer() {
                     const existing = localMap.get(serverNpc.id);
                     existing.userData.targetX = serverNpc.x;
                     existing.userData.targetZ = serverNpc.z;
+                    if (serverNpc.ry !== undefined) existing.userData.targetRy = serverNpc.ry;
                 } else {
-                    // New fox from server — pass ID and position directly into createNPCs
-                    // so the fox spawns at the right spot with the right ID from frame one
-                    if (serverNpc.isBoss) createBoss(scene, player);
+                    // New fox from server — pass ID and position directly, fox spawns at server pos
+                    if (serverNpc.isBoss) createBoss(scene, player, serverNpc.id);
                     else createNPCs(1, scene, player, serverNpc.id, serverNpc.x, serverNpc.z);
-                    const newNpc = npcs[npcs.length - 1];
+                    const newNpc = npcs.find(n => n.userData.serverId === serverNpc.id);
                     if (newNpc) {
                         newNpc.userData.targetX = serverNpc.x;
                         newNpc.userData.targetZ = serverNpc.z;
+                        if (serverNpc.ry !== undefined) newNpc.userData.targetRy = serverNpc.ry;
                     }
                 }
             }
@@ -227,11 +227,6 @@ function spawnRemotePlayer(id) {
         remoteDuck.scale.set(1.5, 1.5, 1.5);
         remoteDuck.rotation.y = Math.PI;
         group.add(remoteDuck);
-        if (remoteDuck.animations && remoteDuck.animations.length > 0) {
-            const m = new THREE.AnimationMixer(remoteDuck);
-            m.clipAction(remoteDuck.animations[0]).play();
-            remotePlayerMixers[id] = m;
-        }
     } else {
         const geo = new THREE.BoxGeometry(1.5, 2, 1.5);
         const mat = new THREE.MeshStandardMaterial({ color: 0x00aaff });
@@ -285,8 +280,6 @@ scene.add(player);
 
 let modelLoaded = false;
 let lastTime = performance.now();
-let mixer = null;
-let waddleAction = null;
 
 const loader = new GLTFLoader();
 loader.load(
@@ -313,14 +306,6 @@ loader.load(
             }
         }
 
-        if (gltf.animations && gltf.animations.length > 0) {
-            console.log("🦆 Animations found:", gltf.animations.map(a => a.name));
-            mixer = new THREE.AnimationMixer(duck);
-            const waddleClip = gltf.animations.find(a => a.name.toLowerCase() === "waddle") ?? gltf.animations[0];
-            if (waddleClip) { waddleAction = mixer.clipAction(waddleClip); waddleAction.play(); }
-        } else {
-            console.warn("⚠️ No animations found in duck GLB.");
-        }
         console.log("✅ Duck model loaded!");
     },
     (progress) => { console.log(`Loading duck: ${Math.round((progress.loaded / progress.total) * 100)}%`); },
@@ -460,7 +445,7 @@ document.getElementById('soloBtn').addEventListener('click', () => {
 document.getElementById('multiBtn').addEventListener('click', () => {
     isMultiplayer = true;
     connectToServer();
-    document.getElementById('roomOptions').style.display = 'flex';
+    document.getElementById('roomOptions').style.display = 'flex'; //shows the buttons
     document.getElementById('soloBtn').style.display = 'none';
     document.getElementById('multiBtn').style.display = 'none';
     document.getElementById('createBtn').disabled = true;
@@ -519,7 +504,7 @@ function triggerGameOver() {
     gameOver = true;
     showFinalTime();
     showFinalKills();
-    if (isMultiplayer && socket && socket.readyState === 1) {
+    if (isMultiplayer && socket && socket.readyState === 1) { //sends player died in the server
         socket.send(JSON.stringify({ type: 'playerDied', kills: totalKills, time: Math.floor(survivalTime) }));
         spectating = true;
         const ids = Object.keys(remotePlayers);
@@ -555,9 +540,7 @@ function animate() {
     const delta = (now - lastTime) / 1000;
     lastTime = now;
 
-    if (mixer) mixer.update(delta);
-    for (const id in remotePlayerMixers) remotePlayerMixers[id].update(delta);
-
+    // Spectate mode — just follow the target player and render, skip all game logic
     if (spectating) {
         if (spectateTargetId && remotePlayers[spectateTargetId]) {
             const pos = remotePlayers[spectateTargetId].position;
@@ -625,10 +608,18 @@ function animate() {
             const prevZ = npc.position.z;
             npc.position.x += (npc.userData.targetX - npc.position.x) * LERP;
             npc.position.z += (npc.userData.targetZ - npc.position.z) * LERP;
-            const dx = npc.position.x - prevX;
-            const dz = npc.position.z - prevZ;
-            if (Math.abs(dx) > 0.0001 || Math.abs(dz) > 0.0001) {
-                npc.rotation.y = Math.atan2(dx, dz) + Math.PI;
+            // Use server rotation (ry) to prevent jitter when movement delta is near zero
+            if (npc.userData.targetRy !== undefined) {
+                let dRy = npc.userData.targetRy - npc.rotation.y;
+                while (dRy > Math.PI) dRy -= Math.PI * 2;
+                while (dRy < -Math.PI) dRy += Math.PI * 2;
+                npc.rotation.y += dRy * LERP;
+            } else {
+                const dx = npc.position.x - prevX;
+                const dz = npc.position.z - prevZ;
+                if (Math.abs(dx) > 0.001 || Math.abs(dz) > 0.001) {
+                    npc.rotation.y = Math.atan2(dx, dz) + Math.PI;
+                }
             }
         }
     }
@@ -666,6 +657,7 @@ function animate() {
         }
     }
 
+    //did the player get hit by a boss bullet
     for (let i = bullets.length - 1; i >= 0; i--) {
         if (!bullets[i].mesh.userData.isEnemyBullet) continue;
         const bBox = new THREE.Box3().setFromObject(bullets[i].mesh);
@@ -679,6 +671,7 @@ function animate() {
     if (!isMultiplayer) checkLevelUp(totalKills, scene, npcs, player);
     document.getElementById('level').textContent = `Level ${getCurrentLevel()}`;
 
+    //every 50ms sends the player's position and rotation to the server
     if (isMultiplayer && socket && myId && socket.readyState === 1 && now - lastSendTime > SEND_RATE) {
         lastSendTime = now;
         socket.send(JSON.stringify({ type: 'move', x: player.position.x, y: player.position.y, z: player.position.z, ry: player.rotation.y }));

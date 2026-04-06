@@ -2,7 +2,7 @@ import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 
 // Keep the process alive if an unexpected error slips through
-process.on('uncaughtException',  (err) => console.error('Uncaught exception:', err));
+process.on('uncaughtException', (err) => console.error('Uncaught exception:', err));
 process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
 
 const httpServer = createServer();
@@ -29,7 +29,7 @@ function getRoomCodeByPlayerId(playerId) {
     return null;
 }
 
-//  NPC SIMULATION 
+//  NPC SIMULATION
 
 // Pushes `count` plain NPC objects into the room — no meshes, just data
 // Pass isBoss=true to spawn the boss instead of a regular fox
@@ -61,7 +61,7 @@ function collidesWithWall(nx, nz, walls) {
     for (const w of walls) {
         const rotated = Math.abs(Math.sin(w.ry)) > 0.5;
         const wHalfX = rotated ? 0.5 : 10;
-        const wHalfZ = rotated ? 10  : 0.5;
+        const wHalfZ = rotated ? 10 : 0.5;
         if (Math.abs(nx - w.x) < nHalf + wHalfX &&
             Math.abs(nz - w.z) < nHalf + wHalfZ) {
             return true;
@@ -70,25 +70,41 @@ function collidesWithWall(nx, nz, walls) {
     return false;
 }
 
+// Returns the target {x,z} for an NPC — remembers the last target and only switches
+// if a different player is 5+ units closer (prevents flip-flopping between equidistant players)
+function pickTarget(npc, room) {
+    const entries = Object.entries(room.playerPositions);
+    if (entries.length === 0) return null;
+
+    let nearestId = null, nearestDist = Infinity;
+    for (const [pid, pos] of entries) {
+        const dx = pos.x - npc.x, dz = pos.z - npc.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < nearestDist) { nearestDist = dist; nearestId = pid; }
+    }
+
+    if (!npc.targetPlayerId || !room.playerPositions[npc.targetPlayerId]) {
+        npc.targetPlayerId = nearestId;
+    } else {
+        const cur = room.playerPositions[npc.targetPlayerId];
+        const curDist = Math.sqrt((cur.x - npc.x) ** 2 + (cur.z - npc.z) ** 2);
+        if (nearestDist < curDist - 5) npc.targetPlayerId = nearestId;
+    }
+    return room.playerPositions[npc.targetPlayerId];
+}
+
 // Handles all boss-specific logic for one tick
 function updateBoss(npc, room, roomCode) {
     const DELTA = 0.05;
 
-    const positions = Object.values(room.playerPositions);
-    let targetX = positions[0].x;
-    let targetZ = positions[0].z;
-    let nearestDist = Infinity;
-    for (const pos of positions) {
-        const dx = pos.x - npc.x;
-        const dz = pos.z - npc.z;
-        const dist = Math.sqrt(dx * dx + dz * dz);
-        if (dist < nearestDist) { nearestDist = dist; targetX = pos.x; targetZ = pos.z; }
-    }
+    const target = pickTarget(npc, room);
+    if (!target) return;
+    const targetX = target.x, targetZ = target.z;
 
     let speed;
-    if (npc.hp > 66)      speed = 0.09;
+    if (npc.hp > 66) speed = 0.09;
     else if (npc.hp > 33) speed = 0.15;
-    else                   speed = 0.24;
+    else speed = 0.24;
 
     const dx = targetX - npc.x;
     const dz = targetZ - npc.z;
@@ -112,8 +128,7 @@ function updateBoss(npc, room, roomCode) {
 }
 
 function updateNPCs(room, roomCode) {
-    const positions = Object.values(room.playerPositions);
-    if (positions.length === 0) return;
+    if (Object.keys(room.playerPositions).length === 0) return;
     const walls = room.walls || [];
 
     for (const npc of room.npcs) {
@@ -122,19 +137,10 @@ function updateNPCs(room, roomCode) {
             continue;
         }
 
-        let targetX = positions[0].x;
-        let targetZ = positions[0].z;
-        let nearestDist = Infinity;
-        for (const pos of positions) {
-            const dx = pos.x - npc.x;
-            const dz = pos.z - npc.z;
-            const dist = Math.sqrt(dx * dx + dz * dz);
-            if (dist < nearestDist) {
-                nearestDist = dist;
-                targetX = pos.x;
-                targetZ = pos.z;
-            }
-        }
+        // Find target player with hysteresis — won't flip unless 5+ units closer
+        const _target = pickTarget(npc, room);
+        if (!_target) continue;
+        const targetX = _target.x, targetZ = _target.z;
 
         // Separation — push foxes apart if closer than 3 units
         for (const other of room.npcs) {
@@ -336,12 +342,10 @@ wss.on('connection', (socket) => {
         const room = rooms[roomCode];
 
         if (id === room.hostId) {
-            // Host left — stop the loop to prevent a memory leak, then destroy the room
             clearInterval(room.interval);
             brodcast({ type: 'restartGame' }, null, roomCode);
             delete rooms[roomCode];
         } else {
-            // Regular player left
             room.players = room.players.filter(p => p !== id);
             delete room.playerPositions[id];
             brodcast({ type: 'playerLeft', id }, id, roomCode);

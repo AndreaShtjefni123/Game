@@ -86,6 +86,7 @@ function _spawnFoxNow(scene, player, serverId = null, spawnX = null, spawnZ = nu
 
     scene.add(npc);
     npcs.push(npc);
+    return npc;
 }
 
 function _spawnBossNow(scene, player) {
@@ -104,6 +105,7 @@ function _spawnBossNow(scene, player) {
     npcs.push(boss);
     document.getElementById('bossBarContainer').style.display = 'block';
     document.getElementById('bossBarInner').style.width = '100%';
+    return boss;
 }
 
 // ── PUBLIC API ────────────────────────────────────────────────────────────────
@@ -111,21 +113,27 @@ function _spawnBossNow(scene, player) {
 // serverId — optional server ID (multiplayer only)
 // spawnX/spawnZ — optional server position (multiplayer only, prevents random spawn jump)
 export function createNPCs(amount, scene, player, serverId = null, spawnX = null, spawnZ = null) {
+    let single = null;
     for (let i = 0; i < amount; i++) {
         if (foxTemplate) {
-            _spawnFoxNow(scene, player, serverId, spawnX, spawnZ);
+            single = _spawnFoxNow(scene, player, serverId, spawnX, spawnZ);
         } else {
-            // Store ID and position in the queue so they survive until the model loads
-            pendingSpawns.push({ scene, player, isBoss: false, serverId, spawnX, spawnZ });
+            const isQueued = serverId !== null && pendingSpawns.some(s => s.serverId === serverId);
+            if (!isQueued) pendingSpawns.push({ scene, player, isBoss: false, serverId, spawnX, spawnZ });
         }
     }
+    return single;
 }
 
-export function createBoss(scene, player) {
+export function createBoss(scene, player, serverId = null) {
     if (foxTemplate) {
-        _spawnBossNow(scene, player);
+        const boss = _spawnBossNow(scene, player);
+        if (serverId !== null) boss.userData.serverId = serverId;
+        return boss;
     } else {
-        pendingSpawns.push({ scene, player, isBoss: true });
+        const isQueued = serverId !== null && pendingSpawns.some(s => s.serverId === serverId);
+        if (!isQueued) pendingSpawns.push({ scene, player, isBoss: true, serverId });
+        return null;
     }
 }
 

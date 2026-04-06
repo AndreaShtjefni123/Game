@@ -79,7 +79,7 @@ export function shoot(event, camera, player, scene) {
     const bullet = makeBulletMesh();
     bullet.position.set(player.position.x, player.position.y, player.position.z); // spawn at player
     bullet.rotation.y = Math.atan2(direction.x, direction.z); // orient tip toward travel direction
-
+    // "what angle do I need to face to look at the target?"
     scene.add(bullet);
     bullets.push({ mesh: bullet, dir: direction }); // store mesh + direction for updateBullets
 
@@ -93,6 +93,7 @@ export function spawnRemoteBullet(x, z, dirX, dirZ, scene) {
     const bullet = makeBulletMesh();
     bullet.position.set(x, 0, z);
     bullet.rotation.y = Math.atan2(dirX, dirZ);
+    bullet.userData.isRemoteBullet = true; // visual only — doesn't count as a kill for local player
     scene.add(bullet);
     bullets.push({ mesh: bullet, dir });
 }
@@ -131,6 +132,18 @@ export function updateBullets(bullets, npcs, walls, scene) {
         // Enemy bullets (fired by the boss) should only hit the player, not NPCs
         // Player-vs-enemy-bullet collision is handled in main.js
         if (bullet.mesh.userData.isEnemyBullet) continue;
+
+        // Remote bullets are visual only — they disappear on NPC contact but don't kill
+        if (bullet.mesh.userData.isRemoteBullet) {
+            for (let j = npcs.length - 1; j >= 0; j--) {
+                if (_bulletBox.intersectsBox(_npcBox.setFromObject(npcs[j]))) {
+                    scene.remove(bullet.mesh);
+                    bullets.splice(i, 1);
+                    break;
+                }
+            }
+            continue;
+        }
 
         // ── NPC CHECK ─────────────────────────────────────────────────────────
         let hitNPC = false;
