@@ -1,6 +1,6 @@
 import { WebSocketServer } from 'ws';
 
-const PORT = 3001;
+const PORT = 3000;
 const ROOM_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const HEARTBEAT_INTERVAL = 30000;
 

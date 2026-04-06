@@ -1,6 +1,6 @@
 import { connect, createRoom, joinRoom, sendStart, onMessage } from './network.js';
 
-const RELAY_URL = 'ws://18.234.143.187:3001';
+const RELAY_URL = 'ws://game.ferit.tech:3000';
 
 let onGameStart = null;
 
