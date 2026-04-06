@@ -156,7 +156,7 @@ export function updateBullets(bullets, npcs, walls, scene, isMultiplayer = false
 
                 if (npcs[j].userData.isBoss) {
                     if (isMultiplayer) {
-                        // In multiplayer, server owns boss HP — just report the hit
+                        // Server owns boss HP — just report the hit, don't touch HP locally
                         bossHit = { serverId: npcs[j].userData.serverId };
                     } else {
                         // Solo: track HP locally

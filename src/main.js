@@ -97,6 +97,11 @@ function connectToServer() {
                     existing.userData.targetX = serverNpc.x;
                     existing.userData.targetZ = serverNpc.z;
                     if (serverNpc.ry !== undefined) existing.userData.targetRy = serverNpc.ry;
+                    // Sync boss HP from server so health bar stays accurate
+                    if (serverNpc.isBoss && serverNpc.hp !== undefined) {
+                        existing.userData.hp = serverNpc.hp;
+                        document.getElementById('bossBarInner').style.width = serverNpc.hp + '%';
+                    }
                 } else {
                     // New fox from server — pass ID and position directly, fox spawns at server pos
                     if (serverNpc.isBoss) createBoss(scene, player, serverNpc.id, serverNpc.x, serverNpc.z);
@@ -646,24 +651,24 @@ function animate() {
     const npcIdsBefore = npcs.map((n, i) => n.userData.serverId ?? i);
     const { kills: killsThisFrame, bossHit } = updateBullets(bullets, npcs, walls, scene, isMultiplayer);
 
-    // In multiplayer: send boss hit to server every bullet (server owns HP)
-    if (isMultiplayer && bossHit && socket && socket.readyState === 1) {
-        socket.send(JSON.stringify({ type: 'kill', npcId: bossHit.serverId }));
-    }
-
-    if (killsThisFrame > 0) {
-        if (!isMultiplayer) {
+    if (!isMultiplayer) {
+        if (killsThisFrame > 0) {
             for (let k = 0; k < killsThisFrame; k++) addKill();
             const toSpawn = Math.min(SPAWN_PER_KILL * killsThisFrame, Math.max(0, MAX_FOXES - npcs.length));
             if (toSpawn > 0) createNPCs(toSpawn, scene, player);
-        } else if (socket && socket.readyState === 1) {
-            const npcIdsAfter = new Set(npcs.map((n, i) => n.userData.serverId ?? i));
-            for (const npcId of npcIdsBefore) {
-                if (!npcIdsAfter.has(npcId)) {
-                    killedNpcIds.add(npcId);
-                    addKill();
-                    socket.send(JSON.stringify({ type: 'kill', npcId }));
-                }
+        }
+    } else if (socket && socket.readyState === 1) {
+        // Send kill per boss hit — server owns boss HP and controls when it dies
+        if (bossHit) {
+            socket.send(JSON.stringify({ type: 'kill', npcId: bossHit.serverId }));
+        }
+        // Send kill for each regular fox removed
+        const npcIdsAfter = new Set(npcs.map((n, i) => n.userData.serverId ?? i));
+        for (const npcId of npcIdsBefore) {
+            if (!npcIdsAfter.has(npcId)) {
+                killedNpcIds.add(npcId);
+                addKill();
+                socket.send(JSON.stringify({ type: 'kill', npcId }));
             }
         }
     }
