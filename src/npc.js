@@ -20,48 +20,44 @@ const pendingSpawns = [];
 
 const loader = new GLTFLoader();
 loader.load(
-    "/scriptfox.glb",                           // path to the fox model in /public
+    "/scriptfox.glb",
     (gltf) => {
-        const model = gltf.scene;               // gltf.scene is the root 3D object
+        const model = gltf.scene;
 
-        // Blender sometimes bakes cameras and lights into the export
-        // They conflict with the game's own lighting so we remove them
         const toRemove = [];
         model.traverse((child) => {
             if (child.isCamera || child.isLight) toRemove.push(child);
         });
         toRemove.forEach((obj) => obj.parent.remove(obj));
 
-        // Save the cleaned model as the template — all future spawns clone this
         foxTemplate = model;
         console.log("✅ Fox template loaded — flushing", pendingSpawns.length, "queued spawns");
 
-        // Flush any spawns that were requested before the model finished loading
-       for (const { scene, player, isBoss, serverId } of pendingSpawns) {
+        // Flush queued spawns — spawnX/spawnZ carry the server position so the fox
+        // appears in the right place instead of a random spot
+        for (const { scene, player, isBoss, serverId, spawnX, spawnZ } of pendingSpawns) {
             if (isBoss) _spawnBossNow(scene, player);
-            else _spawnFoxNow(scene, player, serverId);
+            else _spawnFoxNow(scene, player, serverId, spawnX, spawnZ);
         }
-        // Clear the queue
         pendingSpawns.length = 0;
     },
-    undefined,                                  // progress callback (not used)
+    undefined,
     (err) => console.warn("⚠️ Fox model failed to load, will use fallback boxes.", err)
 );
 
 // ── INTERNAL HELPERS ──────────────────────────────────────────────────────────
 
-// Returns a random x/z position that is at least 20 units away from the player
-// Keeps NPCs from spawning directly on top of the player
+// Returns a random x/z position at least 20 units away from the player
+// Only used in solo mode — multiplayer passes server position directly
 function randomPos(player) {
     let x, z;
     do {
-        x = Math.random() * 70 - 35;           // random value between -35 and +35
+        x = Math.random() * 70 - 35;
         z = Math.random() * 70 - 35;
-    } while (new THREE.Vector3(x, 0, z).distanceTo(player.position) < 20); // retry if too close
+    } while (new THREE.Vector3(x, 0, z).distanceTo(player.position) < 20);
     return { x, z };
 }
 
-// Creates a plain colored box mesh — used as a fallback if the fox .glb fails to load
 function makeFallbackBox(scaleX, scaleY, scaleZ, color) {
     return new THREE.Mesh(
         new THREE.BoxGeometry(scaleX, scaleY, scaleZ),
@@ -69,147 +65,135 @@ function makeFallbackBox(scaleX, scaleY, scaleZ, color) {
     );
 }
 
-// Spawns a single regular fox NPC into the scene
-function _spawnFoxNow(scene, player, serverId = null) {
+// serverId — server's ID stamped immediately so npcState can match this mesh
+// spawnX/spawnZ — if provided, place fox here (multiplayer: server position, no random jump)
+//                 if null, use randomPos (solo mode)
+function _spawnFoxNow(scene, player, serverId = null, spawnX = null, spawnZ = null) {
     const npc = foxTemplate
         ? foxTemplate.clone(true)
         : makeFallbackBox(1.5, 2, 1.5, 0xff0000);
 
     npc.scale.set(3, 3, 3);
-    const { x, z } = randomPos(player);
-    npc.position.set(x, 0, z);
+
+    if (spawnX !== null && spawnZ !== null) {
+        npc.position.set(spawnX, 0, spawnZ); // use server position — no teleport jump
+    } else {
+        const { x, z } = randomPos(player);  // solo mode
+        npc.position.set(x, 0, z);
+    }
+
     if (serverId !== null) npc.userData.serverId = serverId;
+
     scene.add(npc);
     npcs.push(npc);
 }
-// Spawns the boss NPC — larger, slower, has HP, and fires back at the player
+
 function _spawnBossNow(scene, player) {
-    // Clone the template if loaded, otherwise use a dark red fallback box
     const boss = foxTemplate
         ? foxTemplate.clone(true)
-        : makeFallbackBox(4, 6, 4, 0x800000);   // 0x800000 = dark red color
+        : makeFallbackBox(4, 6, 4, 0x800000);
 
-    boss.scale.set(8, 8, 8);                    // boss is much larger than regular foxes
-    boss.userData.isBoss = true;                // flag checked in updateNPCs and shoot.js
-    boss.userData.hp = 100;                     // boss takes 100 bullet hits to kill
-    boss.userData.spawnTimer = 0;               // counts up every frame — resets when minions spawn
-    boss.userData.shootTimer = 0;               // counts up every frame — resets when boss fires
-    const { x, z } = randomPos(player);         // spawn far from the player
+    boss.scale.set(8, 8, 8);
+    boss.userData.isBoss = true;
+    boss.userData.hp = 100;
+    boss.userData.spawnTimer = 0;
+    boss.userData.shootTimer = 0;
+    const { x, z } = randomPos(player);
     boss.position.set(x, 0, z);
     scene.add(boss);
-    npcs.push(boss);                            // boss lives in the same npcs array as regular foxes
-    document.getElementById('bossBarContainer').style.display = 'block'; // show the HP bar UI
-    document.getElementById('bossBarInner').style.width = '100%';        // HP bar starts full
+    npcs.push(boss);
+    document.getElementById('bossBarContainer').style.display = 'block';
+    document.getElementById('bossBarInner').style.width = '100%';
 }
 
 // ── PUBLIC API ────────────────────────────────────────────────────────────────
 
-// Called from main.js and levels.js to spawn a batch of regular foxes
-export function createNPCs(amount, scene, player, serverId = null) {
+// serverId — optional server ID (multiplayer only)
+// spawnX/spawnZ — optional server position (multiplayer only, prevents random spawn jump)
+export function createNPCs(amount, scene, player, serverId = null, spawnX = null, spawnZ = null) {
     for (let i = 0; i < amount; i++) {
         if (foxTemplate) {
-            _spawnFoxNow(scene, player, serverId);
+            _spawnFoxNow(scene, player, serverId, spawnX, spawnZ);
         } else {
-            pendingSpawns.push({ scene, player, isBoss: false, serverId });
+            // Store ID and position in the queue so they survive until the model loads
+            pendingSpawns.push({ scene, player, isBoss: false, serverId, spawnX, spawnZ });
         }
     }
 }
 
-// Called from levels.js when the player reaches level 5
 export function createBoss(scene, player) {
     if (foxTemplate) {
-        _spawnBossNow(scene, player);           // model ready — spawn immediately
+        _spawnBossNow(scene, player);
     } else {
-        pendingSpawns.push({ scene, player, isBoss: true }); // queue for later
+        pendingSpawns.push({ scene, player, isBoss: true });
     }
 }
 
 // ── UPDATE LOOP ───────────────────────────────────────────────────────────────
 
-// Called every frame from main.js — moves every NPC toward the player
-// delta = seconds since last frame (used to make timers frame-rate independent)
-// scene is needed so the boss can spawn minions and bullets
 export function updateNPCs(npcs, player, _playerBox, walls, delta, scene) {
     for (let i = 0; i < npcs.length; i++) {
         const npc = npcs[i];
 
-        // Save position before moving — used to revert if the NPC walks into a wall
         const previousPosition = npc.position.clone();
 
-        // Calculate the direction vector from this NPC toward the player
         const direction = new THREE.Vector3();
-        direction.subVectors(player.position, npc.position); // player minus npc = points toward player
-        direction.y = 0;                        // keep movement flat (no flying up or down)
-        direction.normalize();                  // make the vector length 1 so speed is consistent
+        direction.subVectors(player.position, npc.position);
+        direction.y = 0;
+        direction.normalize();
 
-        // Rotate the NPC model to face the player
-        // Math.atan2 returns the angle in radians, + Math.PI flips it to face forward
         npc.rotation.y = Math.atan2(direction.x, direction.z) + Math.PI;
 
-        // Pick movement speed based on whether this is the boss and its current HP phase
         let speed;
         if (npc.userData.isBoss) {
             if (npc.userData.hp > 66) {
-                speed = 0.03;                   // phase 1 (100–67 HP) — slow and menacing
+                speed = 0.03;
             } else if (npc.userData.hp > 33) {
-                speed = 0.05;                   // phase 2 (66–34 HP) — picking up pace
+                speed = 0.05;
             } else {
-                speed = 0.08;                   // phase 3 (33–0 HP) — faster but still manageable
+                speed = 0.08;
             }
         } else {
-            speed = 0.10;                       // regular fox always moves at this speed
+            speed = 0.10;
         }
 
-        // ── BOSS-ONLY LOGIC ───────────────────────────────────────────────────
         if (npc.userData.isBoss) {
-            // Boss moves straight toward player and ignores walls entirely
             npc.position.addScaledVector(direction, speed);
 
-            // Minion spawn timer — every 10 seconds the boss summons 2 regular foxes
-            npc.userData.spawnTimer += delta;   // add seconds elapsed this frame
+            npc.userData.spawnTimer += delta;
             if (npc.userData.spawnTimer >= 10) {
-                npc.userData.spawnTimer = 0;    // reset the timer
-                // Only spawn minions if under the fox cap to prevent lag
+                npc.userData.spawnTimer = 0;
                 if (npcs.length < 20) createNPCs(2, scene, player);
             }
 
-            // Shoot timer — every 3 seconds the boss fires a bullet at the player
             npc.userData.shootTimer += delta;
             if (npc.userData.shootTimer >= 3) {
-                npc.userData.shootTimer = 0;    // reset the timer
-                bossShoot(npc, player, scene);  // fire a bullet from boss toward player
+                npc.userData.shootTimer = 0;
+                bossShoot(npc, player, scene);
             }
 
-            continue; // skip the wall avoidance and separation logic below — boss doesn't use it
+            continue;
         }
 
-        // ── REGULAR FOX SEPARATION ────────────────────────────────────────────
-        // Pushes foxes apart so they don't all stack on the same position
         const separation = new THREE.Vector3();
         for (let j = 0; j < npcs.length; j++) {
-            if (i === j) continue;              // don't compare an NPC with itself
+            if (i === j) continue;
             const dist = npc.position.distanceTo(npcs[j].position);
-            if (dist < 3) {                     // if two foxes are closer than 3 units apart
+            if (dist < 3) {
                 const pushDir = new THREE.Vector3();
-                pushDir.subVectors(npc.position, npcs[j].position); // direction away from neighbor
+                pushDir.subVectors(npc.position, npcs[j].position);
                 pushDir.y = 0;
                 pushDir.normalize();
-                pushDir.multiplyScalar((3 - dist) * 0.05); // stronger push the closer they are
-                separation.add(pushDir);        // accumulate all push forces
+                pushDir.multiplyScalar((3 - dist) * 0.05);
+                separation.add(pushDir);
             }
         }
-        npc.position.add(separation);          // apply the combined separation force
+        npc.position.add(separation);
 
-        // ── WALL COLLISION ────────────────────────────────────────────────────
-        // Uses a sliding approach — try the full move first, then fall back to X or Z only
-        // This lets foxes slide along walls instead of stopping dead
+        const NPC_SIZE = new THREE.Vector3(1.5, 3, 1.5);
 
-        const NPC_SIZE = new THREE.Vector3(1.5, 3, 1.5); // hitbox size for collision checks
-
-        // Attempt 1 — try moving in both X and Z at once
         npc.position.addScaledVector(direction, speed);
 
-        // Build a bounding box around the new position and check every wall
         const npcBox = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
         let blocked = false;
         for (let j = 0; j < walls.length; j++) {
@@ -219,12 +203,10 @@ export function updateNPCs(npcs, player, _playerBox, walls, delta, scene) {
             }
         }
 
-        // Full move worked — no wall hit, skip to next NPC
         if (!blocked) continue;
 
-        // Attempt 2 — revert and try X axis only
-        npc.position.copy(previousPosition);   // undo the full move
-        npc.position.x += direction.x * speed; // only move horizontally
+        npc.position.copy(previousPosition);
+        npc.position.x += direction.x * speed;
 
         const npcBoxX = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
         let blockedX = false;
@@ -234,9 +216,8 @@ export function updateNPCs(npcs, player, _playerBox, walls, delta, scene) {
                 break;
             }
         }
-        if (blockedX) npc.position.x = previousPosition.x; // X is blocked too, revert it
+        if (blockedX) npc.position.x = previousPosition.x;
 
-        // Attempt 3 — try Z axis only (on top of whatever X settled to)
         npc.position.z += direction.z * speed;
 
         const npcBoxZ = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
@@ -247,7 +228,6 @@ export function updateNPCs(npcs, player, _playerBox, walls, delta, scene) {
                 break;
             }
         }
-        if (blockedZ) npc.position.z = previousPosition.z; // Z is blocked too, revert it
-        // If both X and Z are blocked the NPC stays exactly at previousPosition (fully stuck)
+        if (blockedZ) npc.position.z = previousPosition.z;
     }
 }

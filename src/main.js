@@ -21,12 +21,10 @@ const roomPlayers = [];
 let spectating = false;
 let spectateTargetId = null;
 const remotePlayers = {};
-const killedNpcIds = new Set(); // NPCs we killed locally — suppress npcState re-spawning them
+const remotePlayerMixers = {};
+const killedNpcIds = new Set();
 
-
-// We send our position 20 times per second (every 50 ms).
-// Sending every frame (60/s) would flood the server needlessly.
-const SEND_RATE = 50; // milliseconds
+const SEND_RATE = 50;
 let lastSendTime = 0;
 
 function connectToServer() {
@@ -91,35 +89,32 @@ function connectToServer() {
             // Build a lookup of what we have locally (by serverId)
             const localMap = new Map(npcs.map(n => [n.userData.serverId, n]));
 
-            // Update existing ones and spawn missing ones
             for (const serverNpc of data.npcs) {
-                // Skip NPCs we already killed locally — don't let them pulse back
                 if (killedNpcIds.has(serverNpc.id)) continue;
 
                 if (localMap.has(serverNpc.id)) {
-                    // Already have this NPC — store as target for smooth lerp this frame
+                    // Already have this fox — just update its target position for the lerp
                     const existing = localMap.get(serverNpc.id);
                     existing.userData.targetX = serverNpc.x;
                     existing.userData.targetZ = serverNpc.z;
                 } else {
-                    // Server added a new NPC we don't have yet — spawn and tag it
+                    // New fox from server — pass ID and position directly into createNPCs
+                    // so the fox spawns at the right spot with the right ID from frame one
                     if (serverNpc.isBoss) createBoss(scene, player);
-                    else createNPCs(1, scene, player, serverNpc.id);
+                    else createNPCs(1, scene, player, serverNpc.id, serverNpc.x, serverNpc.z);
                     const newNpc = npcs[npcs.length - 1];
-                    newNpc.position.set(serverNpc.x, 0, serverNpc.z);
-                    newNpc.userData.targetX = serverNpc.x;
-                    newNpc.userData.targetZ = serverNpc.z;
+                    if (newNpc) {
+                        newNpc.userData.targetX = serverNpc.x;
+                        newNpc.userData.targetZ = serverNpc.z;
+                    }
+                }
             }
         }
-    }
+
         if (data.type === 'killUpdate') {
-            // Only sync the level — kills are tracked individually per player, not shared
             document.getElementById('level').textContent = 'Level ' + data.level;
         }
 
-        // 'kill' handler removed — npcState is now the sole authority on NPC removal
-
-        // Server fired a boss bullet — calculate direction and spawn it locally
         if (data.type === 'bossBullet') {
             const dx = data.targetX - data.x;
             const dz = data.targetZ - data.z;
@@ -127,7 +122,6 @@ function connectToServer() {
             if (len > 0) spawnBossBullet(data.x, data.z, dx / len, dz / len, scene);
         }
 
-        // Server updated boss HP — sync the HP bar UI
         if (data.type === 'bossHp') {
             const boss = npcs.find(n => n.userData.serverId === data.npcId);
             if (boss) {
@@ -157,7 +151,7 @@ function connectToServer() {
             serverWalls = data.walls;
             for (const pid of data.existingPlayers) {
                 roomPlayers.push(pid);
-                spawnRemotePlayer(pid); // spawn a mesh for each player already in the room (e.g. the host)
+                spawnRemotePlayer(pid);
             }
             roomPlayers.push(myId);
             document.getElementById('mainMenu').style.display = 'none';
@@ -210,14 +204,12 @@ function connectToServer() {
 
     socket.onopen = () => {
         console.log('WebSocket connected to server');
-        // Enable the multiplayer buttons now that we're connected
         document.getElementById('createBtn').disabled = false;
         document.getElementById('joinBtn').disabled = false;
         document.getElementById('createBtn').innerText = 'Create Party';
     };
     socket.onerror = (e) => {
         console.warn('WebSocket error:', e);
-        // Inform the user if the server is offline or unreachable
         document.getElementById('createBtn').innerText = 'Server Offline';
     };
     socket.onclose = () => console.log('Disconnected from server');
@@ -296,7 +288,6 @@ let lastTime = performance.now();
 let mixer = null;
 let waddleAction = null;
 
-// Load the duck .glb model asynchronously
 const loader = new GLTFLoader();
 loader.load(
     "/scriptduck.glb",
@@ -364,11 +355,10 @@ function createWalls(amount) {
 
         scene.add(wall);
         walls.push(wall);
-        wall.userData.box = new THREE.Box3().setFromObject(wall); // cached — walls never move
+        wall.userData.box = new THREE.Box3().setFromObject(wall);
     }
 }
 createWalls(10);
-
 
 function placeWallsFromServer(wallData) {
     for (const wall of walls) scene.remove(wall);
@@ -382,7 +372,7 @@ function placeWallsFromServer(wallData) {
         wall.rotation.y = w.ry;
         scene.add(wall);
         walls.push(wall);
-        wall.userData.box = new THREE.Box3().setFromObject(wall); // cached — walls never move
+        wall.userData.box = new THREE.Box3().setFromObject(wall);
     }
 }
 
@@ -415,7 +405,7 @@ window.addEventListener('keyup', (e) => keys[e.key] = false);
 let gameStarted = false;
 
 window.addEventListener('mousedown', (e) => {
-    if (e.button === 0 && gameStarted && !gameOver) { // only shoot when game is actually running
+    if (e.button === 0 && gameStarted && !gameOver) {
         const shotData = shoot(e, camera, player, scene);
         if (isMultiplayer && socket && socket.readyState === 1 && shotData) {
             socket.send(JSON.stringify({ type: 'shoot', ...shotData }));
@@ -458,13 +448,11 @@ function startGame() {
     if (!isMultiplayer) createNPCs(3, scene, player);
     startPickupSpawner(scene, walls);
     initUltimate(scene, player, npcs);
-    gameStarted = true; // now clicks fire bullets
+    gameStarted = true;
     animate();
 }
 
-// Solo button — no server, local AI runs as normal
-document.getElementById('soloBtn').addEventListener('click', () => { //browser API that finds an HTML element by its id
-    //attribute and returns it so you can read or change it with JavaScript.
+document.getElementById('soloBtn').addEventListener('click', () => {
     isMultiplayer = false;
     startGame();
 });
@@ -475,8 +463,6 @@ document.getElementById('multiBtn').addEventListener('click', () => {
     document.getElementById('roomOptions').style.display = 'flex';
     document.getElementById('soloBtn').style.display = 'none';
     document.getElementById('multiBtn').style.display = 'none';
-
-    // Disable the multiplayer buttons while connecting
     document.getElementById('createBtn').disabled = true;
     document.getElementById('joinBtn').disabled = true;
     document.getElementById('createBtn').innerText = 'Connecting...';
@@ -525,7 +511,6 @@ document.getElementById('joinBtn').addEventListener('click', () => {
 
 let gameOver = false;
 
-// Reusable Box3 instances — avoids creating hundreds of throwaway objects per second
 const playerBox = new THREE.Box3();
 const _playerSize = new THREE.Vector3(1.5, 2, 1.5);
 const _npcBox = new THREE.Box3();
@@ -573,7 +558,6 @@ function animate() {
     if (mixer) mixer.update(delta);
     for (const id in remotePlayerMixers) remotePlayerMixers[id].update(delta);
 
-    // Spectate mode — just follow the target player and render, skip all game logic
     if (spectating) {
         if (spectateTargetId && remotePlayers[spectateTargetId]) {
             const pos = remotePlayers[spectateTargetId].position;
@@ -634,16 +618,13 @@ function animate() {
     if (!isMultiplayer) {
         updateNPCs(npcs, player, playerBox, walls, delta, scene);
     } else {
-        // Smoothly interpolate every fox toward the server-authoritative target position
-        // and update their rotation so they always face the direction they're moving
-        const LERP = 0.2; // 0 = never moves, 1 = instant snap — 0.2 gives smooth motion
+        const LERP = 0.2;
         for (const npc of npcs) {
             if (npc.userData.targetX === undefined) continue;
             const prevX = npc.position.x;
             const prevZ = npc.position.z;
             npc.position.x += (npc.userData.targetX - npc.position.x) * LERP;
             npc.position.z += (npc.userData.targetZ - npc.position.z) * LERP;
-            // Rotate to face movement direction (same formula as solo npc.js)
             const dx = npc.position.x - prevX;
             const dz = npc.position.z - prevZ;
             if (Math.abs(dx) > 0.0001 || Math.abs(dz) > 0.0001) {
@@ -651,10 +632,6 @@ function animate() {
             }
         }
     }
-    //Creates an invisible box around each fox, 
-    //then checks if it overlaps with the bullet box. 
-    //If they overlap — that's a hit.
-
 
     for (let i = 0; i < npcs.length; i++) {
         if (_npcBox.setFromObject(npcs[i]).intersectsBox(playerBox)) {
@@ -681,8 +658,8 @@ function animate() {
             const npcIdsAfter = new Set(npcs.map((n, i) => n.userData.serverId ?? i));
             for (const npcId of npcIdsBefore) {
                 if (!npcIdsAfter.has(npcId)) {
-                    killedNpcIds.add(npcId); // suppress npcState from re-spawning this fox
-                    addKill(); // count this kill toward YOUR personal score
+                    killedNpcIds.add(npcId);
+                    addKill();
                     socket.send(JSON.stringify({ type: 'kill', npcId }));
                 }
             }
