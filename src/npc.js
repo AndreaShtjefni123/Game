@@ -36,7 +36,7 @@ loader.load(
         // Flush queued spawns — spawnX/spawnZ carry the server position so the fox
         // appears in the right place instead of a random spot
         for (const { scene, player, isBoss, serverId, spawnX, spawnZ } of pendingSpawns) {
-            if (isBoss) _spawnBossNow(scene, player);
+            if (isBoss) _spawnBossNow(scene, player, serverId, spawnX, spawnZ);
             else _spawnFoxNow(scene, player, serverId, spawnX, spawnZ);
         }
         pendingSpawns.length = 0;
@@ -89,7 +89,7 @@ function _spawnFoxNow(scene, player, serverId = null, spawnX = null, spawnZ = nu
     return npc;
 }
 
-function _spawnBossNow(scene, player) {
+function _spawnBossNow(scene, player, serverId = null, spawnX = null, spawnZ = null) {
     const boss = foxTemplate
         ? foxTemplate.clone(true)
         : makeFallbackBox(4, 6, 4, 0x800000);
@@ -99,8 +99,13 @@ function _spawnBossNow(scene, player) {
     boss.userData.hp = 100;
     boss.userData.spawnTimer = 0;
     boss.userData.shootTimer = 0;
-    const { x, z } = randomPos(player);
-    boss.position.set(x, 0, z);
+    if (spawnX !== null && spawnZ !== null) {
+        boss.position.set(spawnX, 0, spawnZ);
+    } else {
+        const { x, z } = randomPos(player);
+        boss.position.set(x, 0, z);
+    }
+    if (serverId !== null) boss.userData.serverId = serverId;
     scene.add(boss);
     npcs.push(boss);
     document.getElementById('bossBarContainer').style.display = 'block';
@@ -125,10 +130,9 @@ export function createNPCs(amount, scene, player, serverId = null, spawnX = null
     return single;
 }
 
-export function createBoss(scene, player, serverId = null) {
+export function createBoss(scene, player, serverId = null, spawnX = null, spawnZ = null) {
     if (foxTemplate) {
-        const boss = _spawnBossNow(scene, player);
-        if (serverId !== null) boss.userData.serverId = serverId;
+        const boss = _spawnBossNow(scene, player, serverId, spawnX, spawnZ);
         return boss;
     } else {
         const isQueued = serverId !== null && pendingSpawns.some(s => s.serverId === serverId);

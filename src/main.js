@@ -99,7 +99,7 @@ function connectToServer() {
                     if (serverNpc.ry !== undefined) existing.userData.targetRy = serverNpc.ry;
                 } else {
                     // New fox from server — pass ID and position directly, fox spawns at server pos
-                    if (serverNpc.isBoss) createBoss(scene, player, serverNpc.id);
+                    if (serverNpc.isBoss) createBoss(scene, player, serverNpc.id, serverNpc.x, serverNpc.z);
                     else createNPCs(1, scene, player, serverNpc.id, serverNpc.x, serverNpc.z);
                     const newNpc = npcs.find(n => n.userData.serverId === serverNpc.id);
                     if (newNpc) {
