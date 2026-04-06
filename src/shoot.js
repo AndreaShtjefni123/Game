@@ -105,8 +105,7 @@ export function updateBullets(bullets, npcs, walls, scene) { // walls added here
         // check if bullet hit a wall
         let hitWall = false;
         for (let w = 0; w < walls.length; w++) {
-            const wallBox = new THREE.Box3().setFromObject(walls[w]);
-            if (bulletBox.intersectsBox(wallBox)) {
+            if (bulletBox.intersectsBox(walls[w].userData.box)) {
                 // remove bullet, stop it here
                 scene.remove(bullet.mesh);
                 bullets.splice(i, 1);

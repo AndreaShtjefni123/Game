@@ -33,6 +33,16 @@ loader.load(
     (err) => console.warn("⚠️ Fox model failed to load, will use fallback boxes.", err)
 );
 
+// ── REUSABLE OBJECTS (avoid per-frame allocations) ───────────────────────────
+const _prevPos = new THREE.Vector3();
+const _direction = new THREE.Vector3();
+const _separation = new THREE.Vector3();
+const _pushDir = new THREE.Vector3();
+const _npcBox = new THREE.Box3();
+const _npcBoxX = new THREE.Box3();
+const _npcBoxZ = new THREE.Box3();
+const _npcSize = new THREE.Vector3(1.5, 3, 1.5);
+
 // ── internal helpers ──────────────────────────────────────────────────────────
 
 function randomPos(player) {
@@ -135,7 +145,7 @@ export function updateNPCs(npcs, player, _playerBox, walls, player2 = null) {
     for (let i = 0; i < npcs.length; i++) {
         const npc = npcs[i];
 
-        const previousPosition = npc.position.clone();
+        _prevPos.copy(npc.position);
 
         // Chase the closer player
         let target = player;
@@ -145,47 +155,43 @@ export function updateNPCs(npcs, player, _playerBox, walls, player2 = null) {
             if (d2 < d1) target = player2;
         }
 
-        const direction = new THREE.Vector3();
-        direction.subVectors(target.position, npc.position);
-        direction.y = 0;
-        direction.normalize();
+        _direction.subVectors(target.position, npc.position);
+        _direction.y = 0;
+        _direction.normalize();
 
         // face the player
-        npc.rotation.y = Math.atan2(direction.x, direction.z) + Math.PI;
+        npc.rotation.y = Math.atan2(_direction.x, _direction.z) + Math.PI;
 
         const speed = npc.userData.isBoss ? 0.05 : 0.10;
 
         // boss ignores walls — move directly toward player and skip wall checks
         if (npc.userData.isBoss) {
-            npc.position.addScaledVector(direction, speed);
+            npc.position.addScaledVector(_direction, speed);
             continue;
         }
 
         // separation: push away from other NPCs
-        const separation = new THREE.Vector3();
+        _separation.set(0, 0, 0);
         for (let j = 0; j < npcs.length; j++) {
             if (i === j) continue;
             const dist = npc.position.distanceTo(npcs[j].position);
             if (dist < 3) {
-                const pushDir = new THREE.Vector3();
-                pushDir.subVectors(npc.position, npcs[j].position);
-                pushDir.y = 0;
-                pushDir.normalize();
-                pushDir.multiplyScalar((3 - dist) * 0.05);
-                separation.add(pushDir);
+                _pushDir.subVectors(npc.position, npcs[j].position);
+                _pushDir.y = 0;
+                _pushDir.normalize();
+                _pushDir.multiplyScalar((3 - dist) * 0.05);
+                _separation.add(_pushDir);
             }
         }
-        npc.position.add(separation);
-
-        const NPC_SIZE = new THREE.Vector3(1.5, 3, 1.5);
+        npc.position.add(_separation);
 
         // try full move first
-        npc.position.addScaledVector(direction, speed);
+        npc.position.addScaledVector(_direction, speed);
 
-        const npcBox = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
+        _npcBox.setFromCenterAndSize(npc.position, _npcSize);
         let blocked = false;
         for (let j = 0; j < walls.length; j++) {
-            if (npcBox.intersectsBox(new THREE.Box3().setFromObject(walls[j]))) {
+            if (_npcBox.intersectsBox(walls[j].userData.box)) {
                 blocked = true;
                 break;
             }
@@ -194,30 +200,30 @@ export function updateNPCs(npcs, player, _playerBox, walls, player2 = null) {
         if (!blocked) continue;
 
         // try X only
-        npc.position.copy(previousPosition);
-        npc.position.x += direction.x * speed;
+        npc.position.copy(_prevPos);
+        npc.position.x += _direction.x * speed;
 
-        const npcBoxX = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
+        _npcBoxX.setFromCenterAndSize(npc.position, _npcSize);
         let blockedX = false;
         for (let j = 0; j < walls.length; j++) {
-            if (npcBoxX.intersectsBox(new THREE.Box3().setFromObject(walls[j]))) {
+            if (_npcBoxX.intersectsBox(walls[j].userData.box)) {
                 blockedX = true;
                 break;
             }
         }
-        if (blockedX) npc.position.x = previousPosition.x;
+        if (blockedX) npc.position.x = _prevPos.x;
 
         // try Z only
-        npc.position.z += direction.z * speed;
+        npc.position.z += _direction.z * speed;
 
-        const npcBoxZ = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
+        _npcBoxZ.setFromCenterAndSize(npc.position, _npcSize);
         let blockedZ = false;
         for (let j = 0; j < walls.length; j++) {
-            if (npcBoxZ.intersectsBox(new THREE.Box3().setFromObject(walls[j]))) {
+            if (_npcBoxZ.intersectsBox(walls[j].userData.box)) {
                 blockedZ = true;
                 break;
             }
         }
-        if (blockedZ) npc.position.z = previousPosition.z;
+        if (blockedZ) npc.position.z = _prevPos.z;
     }
 }

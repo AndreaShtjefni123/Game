@@ -78,6 +78,17 @@ loader.load(
     }
 );
 
+// ── REUSABLE OBJECTS (avoid per-frame allocations) ──
+const _prevPos = new THREE.Vector3();
+const _camDir = new THREE.Vector3();
+const _camRight = new THREE.Vector3();
+const _moveDir = new THREE.Vector3();
+const _playerBox = new THREE.Box3();
+const _playerSize = new THREE.Vector3(1.5, 2, 1.5);
+const _remoteBox = new THREE.Box3();
+const _remoteSize = new THREE.Vector3(1.5, 2, 1.5);
+const _npcBox = new THREE.Box3();
+
 // ── MULTIPLAYER STATE ───────────────────────────────
 let gameStarted = false;
 let multiplayerHost = false;
@@ -124,6 +135,7 @@ function createWalls(amount) {
         if (overlapping) { i--; continue; }
 
         scene.add(wall);
+        wall.userData.box = new THREE.Box3().setFromObject(wall);
         walls.push(wall);
         wallData.push({ x: wall.position.x, z: wall.position.z, r: wall.rotation.y });
     }
@@ -137,6 +149,7 @@ function createWallsFromData(data) {
         wall.position.set(w.x, 4, w.z);
         wall.rotation.y = w.r;
         scene.add(wall);
+        wall.userData.box = new THREE.Box3().setFromObject(wall);
         walls.push(wall);
     }
 }
@@ -339,38 +352,32 @@ function hostUpdate(delta, now) {
     updateClock();
 
     // ── Local player movement ──
-    const previousPosition = player.position.clone();
+    _prevPos.copy(player.position);
 
-    const cameraDirection = new THREE.Vector3();
-    camera.getWorldDirection(cameraDirection);
-    cameraDirection.y = 0;
-    cameraDirection.normalize();
+    camera.getWorldDirection(_camDir);
+    _camDir.y = 0;
+    _camDir.normalize();
 
-    const cameraRight = new THREE.Vector3();
-    cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0)).normalize();
+    _camRight.crossVectors(_camDir, new THREE.Vector3(0, 1, 0)).normalize();
 
     const speed = 0.18;
-    const moveDir = new THREE.Vector3();
-    if (keys['w'] || keys['W']) moveDir.addScaledVector(cameraDirection, 1);
-    if (keys['s'] || keys['S']) moveDir.addScaledVector(cameraDirection, -1);
-    if (keys['a'] || keys['A']) moveDir.addScaledVector(cameraRight, -1);
-    if (keys['d'] || keys['D']) moveDir.addScaledVector(cameraRight, 1);
+    _moveDir.set(0, 0, 0);
+    if (keys['w'] || keys['W']) _moveDir.addScaledVector(_camDir, 1);
+    if (keys['s'] || keys['S']) _moveDir.addScaledVector(_camDir, -1);
+    if (keys['a'] || keys['A']) _moveDir.addScaledVector(_camRight, -1);
+    if (keys['d'] || keys['D']) _moveDir.addScaledVector(_camRight, 1);
 
-    const isMoving = moveDir.lengthSq() > 0;
-    if (isMoving) {
-        moveDir.normalize();
-        player.position.addScaledVector(moveDir, speed);
-        player.rotation.y = Math.atan2(moveDir.x, moveDir.z);
+    if (_moveDir.lengthSq() > 0) {
+        _moveDir.normalize();
+        player.position.addScaledVector(_moveDir, speed);
+        player.rotation.y = Math.atan2(_moveDir.x, _moveDir.z);
     }
 
     // Wall collision — player 1
-    const playerBox = new THREE.Box3().setFromCenterAndSize(
-        player.position, new THREE.Vector3(1.5, 2, 1.5)
-    );
+    _playerBox.setFromCenterAndSize(player.position, _playerSize);
     for (let i = 0; i < walls.length; i++) {
-        const wallBox = new THREE.Box3().setFromObject(walls[i]);
-        if (playerBox.intersectsBox(wallBox)) {
-            player.position.copy(previousPosition);
+        if (_playerBox.intersectsBox(walls[i].userData.box)) {
+            player.position.copy(_prevPos);
             break;
         }
     }
@@ -386,12 +393,12 @@ function hostUpdate(delta, now) {
     processClientInputs();
 
     // ── Update NPCs (chase closer player) ──
-    updateNPCs(npcs, player, playerBox, walls, remotePlayer);
+    updateNPCs(npcs, player, _playerBox, walls, remotePlayer);
 
     // NPC collision — player 1
     for (let i = 0; i < npcs.length; i++) {
-        const npcBox = new THREE.Box3().setFromObject(npcs[i]);
-        if (npcBox.intersectsBox(playerBox)) {
+        _npcBox.setFromObject(npcs[i]);
+        if (_npcBox.intersectsBox(_playerBox)) {
             takeDamage(20);
             break;
         }
@@ -399,12 +406,10 @@ function hostUpdate(delta, now) {
 
     // NPC collision — player 2
     if (remotePlayer) {
-        const remoteBox = new THREE.Box3().setFromCenterAndSize(
-            remotePlayer.position, new THREE.Vector3(1.5, 2, 1.5)
-        );
+        _remoteBox.setFromCenterAndSize(remotePlayer.position, _remoteSize);
         for (let i = 0; i < npcs.length; i++) {
-            const npcBox = new THREE.Box3().setFromObject(npcs[i]);
-            if (npcBox.intersectsBox(remoteBox)) {
+            _npcBox.setFromObject(npcs[i]);
+            if (_npcBox.intersectsBox(_remoteBox)) {
                 if (Date.now() - remotePlayerLastHit >= REMOTE_IFRAME) {
                     remotePlayerHealth = Math.max(0, remotePlayerHealth - 20);
                     remotePlayerLastHit = Date.now();
@@ -425,12 +430,10 @@ function hostUpdate(delta, now) {
 
     // Pickups — player 2 (manual check)
     if (remotePlayer) {
-        const remoteBox = new THREE.Box3().setFromCenterAndSize(
-            remotePlayer.position, new THREE.Vector3(1.5, 2, 1.5)
-        );
+        _remoteBox.setFromCenterAndSize(remotePlayer.position, _remoteSize);
         for (let i = pickups.length - 1; i >= 0; i--) {
             const popcornBox = new THREE.Box3().setFromObject(pickups[i]);
-            if (popcornBox.intersectsBox(remoteBox)) {
+            if (popcornBox.intersectsBox(_remoteBox)) {
                 remotePlayerHealth = Math.min(100, remotePlayerHealth + 10);
                 scene.remove(pickups[i]);
                 pickups.splice(i, 1);
@@ -482,11 +485,9 @@ function processClientInputs() {
         }
 
         // Wall collision
-        const remoteBox = new THREE.Box3().setFromCenterAndSize(
-            remotePlayer.position, new THREE.Vector3(1.5, 2, 1.5)
-        );
+        _remoteBox.setFromCenterAndSize(remotePlayer.position, _remoteSize);
         for (let i = 0; i < walls.length; i++) {
-            if (remoteBox.intersectsBox(new THREE.Box3().setFromObject(walls[i]))) {
+            if (_remoteBox.intersectsBox(walls[i].userData.box)) {
                 remotePlayer.position.copy(prevPos);
                 break;
             }
@@ -581,36 +582,32 @@ function clientUpdate(delta, now) {
     }
 
     // ── Local prediction (own movement) ──
-    const previousPosition = player.position.clone();
+    _prevPos.copy(player.position);
 
-    const cameraDirection = new THREE.Vector3();
-    camera.getWorldDirection(cameraDirection);
-    cameraDirection.y = 0;
-    cameraDirection.normalize();
+    camera.getWorldDirection(_camDir);
+    _camDir.y = 0;
+    _camDir.normalize();
 
-    const cameraRight = new THREE.Vector3();
-    cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0)).normalize();
+    _camRight.crossVectors(_camDir, new THREE.Vector3(0, 1, 0)).normalize();
 
     const speed = 0.18;
-    const moveDir = new THREE.Vector3();
-    if (keys['w'] || keys['W']) moveDir.addScaledVector(cameraDirection, 1);
-    if (keys['s'] || keys['S']) moveDir.addScaledVector(cameraDirection, -1);
-    if (keys['a'] || keys['A']) moveDir.addScaledVector(cameraRight, -1);
-    if (keys['d'] || keys['D']) moveDir.addScaledVector(cameraRight, 1);
+    _moveDir.set(0, 0, 0);
+    if (keys['w'] || keys['W']) _moveDir.addScaledVector(_camDir, 1);
+    if (keys['s'] || keys['S']) _moveDir.addScaledVector(_camDir, -1);
+    if (keys['a'] || keys['A']) _moveDir.addScaledVector(_camRight, -1);
+    if (keys['d'] || keys['D']) _moveDir.addScaledVector(_camRight, 1);
 
-    if (moveDir.lengthSq() > 0) {
-        moveDir.normalize();
-        player.position.addScaledVector(moveDir, speed);
-        player.rotation.y = Math.atan2(moveDir.x, moveDir.z);
+    if (_moveDir.lengthSq() > 0) {
+        _moveDir.normalize();
+        player.position.addScaledVector(_moveDir, speed);
+        player.rotation.y = Math.atan2(_moveDir.x, _moveDir.z);
     }
 
     // Wall collision
-    const playerBox = new THREE.Box3().setFromCenterAndSize(
-        player.position, new THREE.Vector3(1.5, 2, 1.5)
-    );
+    _playerBox.setFromCenterAndSize(player.position, _playerSize);
     for (let i = 0; i < walls.length; i++) {
-        if (playerBox.intersectsBox(new THREE.Box3().setFromObject(walls[i]))) {
-            player.position.copy(previousPosition);
+        if (_playerBox.intersectsBox(walls[i].userData.box)) {
+            player.position.copy(_prevPos);
             break;
         }
     }
