@@ -102,8 +102,9 @@ export function spawnRemoteBullet(x, z, dirX, dirZ, scene) {
 
 // Called every frame from main.js — moves all bullets and checks for collisions
 // Returns the number of NPCs killed this frame so main.js can update the kill counter
-export function updateBullets(bullets, npcs, walls, scene) {
+export function updateBullets(bullets, npcs, walls, scene, isMultiplayer = false) {
     let killsThisFrame = 0;
+    let bossHit = null; // { serverId } if boss was hit this frame in multiplayer
 
     // Iterate backwards so splicing (removing) bullets doesn't skip indices
     for (let i = bullets.length - 1; i >= 0; i--) {
@@ -154,17 +155,20 @@ export function updateBullets(bullets, npcs, walls, scene) {
                 hitNPC = true;
 
                 if (npcs[j].userData.isBoss) {
-                    // Boss takes 1 damage per bullet and has 100 total HP
-                    npcs[j].userData.hp--;
-                    // Update the boss health bar width as a percentage
-                    const pct = (npcs[j].userData.hp / 100) * 100;
-                    document.getElementById('bossBarInner').style.width = pct + '%';
-                    if (npcs[j].userData.hp <= 0) {
-                        // Boss is dead — hide the health bar and remove it
-                        document.getElementById('bossBarContainer').style.display = 'none';
-                        scene.remove(npcs[j]);
-                        npcs.splice(j, 1);
-                        killsThisFrame++; // count boss kill for the level-up check
+                    if (isMultiplayer) {
+                        // In multiplayer, server owns boss HP — just report the hit
+                        bossHit = { serverId: npcs[j].userData.serverId };
+                    } else {
+                        // Solo: track HP locally
+                        npcs[j].userData.hp--;
+                        const pct = (npcs[j].userData.hp / 100) * 100;
+                        document.getElementById('bossBarInner').style.width = pct + '%';
+                        if (npcs[j].userData.hp <= 0) {
+                            document.getElementById('bossBarContainer').style.display = 'none';
+                            scene.remove(npcs[j]);
+                            npcs.splice(j, 1);
+                            killsThisFrame++;
+                        }
                     }
                 } else {
                     // Regular fox — one hit kill, remove immediately
@@ -178,7 +182,7 @@ export function updateBullets(bullets, npcs, walls, scene) {
 
         if (hitNPC) continue; // bullet already destroyed — stop processing it
     }
-    return killsThisFrame; // main.js uses this to call addKill() and spawn new foxes
+    return { kills: killsThisFrame, bossHit };
 }
 
 // Spawns a boss bullet using position and direction sent from the server

@@ -128,6 +128,11 @@ function connectToServer() {
                 boss.userData.hp = data.hp;
                 document.getElementById('bossBarContainer').style.display = 'block';
                 document.getElementById('bossBarInner').style.width = data.hp + '%';
+                if (data.hp <= 0) {
+                    document.getElementById('bossBarContainer').style.display = 'none';
+                    scene.remove(boss);
+                    npcs.splice(npcs.indexOf(boss), 1);
+                }
             }
         }
 
@@ -639,7 +644,13 @@ function animate() {
     const SPAWN_PER_KILL = 2;
     const MAX_FOXES = 20;
     const npcIdsBefore = npcs.map((n, i) => n.userData.serverId ?? i);
-    const killsThisFrame = updateBullets(bullets, npcs, walls, scene);
+    const { kills: killsThisFrame, bossHit } = updateBullets(bullets, npcs, walls, scene, isMultiplayer);
+
+    // In multiplayer: send boss hit to server every bullet (server owns HP)
+    if (isMultiplayer && bossHit && socket && socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: 'kill', npcId: bossHit.serverId }));
+    }
+
     if (killsThisFrame > 0) {
         if (!isMultiplayer) {
             for (let k = 0; k < killsThisFrame; k++) addKill();
