@@ -99,14 +99,54 @@ export function createBoss(scene, player) {
     }
 }
 
-export function updateNPCs(npcs, player, _playerBox, walls) {
+export function syncNPCs(scene, npcData) {
+    // Remove excess
+    while (npcs.length > npcData.length) {
+        const npc = npcs.pop();
+        scene.remove(npc);
+    }
+    // Add missing
+    while (npcs.length < npcData.length) {
+        const npc = foxTemplate
+            ? foxTemplate.clone(true)
+            : makeFallbackBox(1.5, 2, 1.5, 0xff0000);
+        npc.scale.set(3, 3, 3);
+        scene.add(npc);
+        npcs.push(npc);
+    }
+    // Update positions and state
+    for (let i = 0; i < npcData.length; i++) {
+        const d = npcData[i];
+        const npc = npcs[i];
+        npc.position.set(d.x, 0, d.z);
+        npc.rotation.y = d.r;
+        if (d.b) {
+            npc.scale.set(8, 8, 8);
+            npc.userData.isBoss = true;
+            npc.userData.hp = d.hp;
+        } else {
+            npc.scale.set(3, 3, 3);
+            npc.userData.isBoss = false;
+        }
+    }
+}
+
+export function updateNPCs(npcs, player, _playerBox, walls, player2 = null) {
     for (let i = 0; i < npcs.length; i++) {
         const npc = npcs[i];
 
         const previousPosition = npc.position.clone();
 
+        // Chase the closer player
+        let target = player;
+        if (player2) {
+            const d1 = npc.position.distanceTo(player.position);
+            const d2 = npc.position.distanceTo(player2.position);
+            if (d2 < d1) target = player2;
+        }
+
         const direction = new THREE.Vector3();
-        direction.subVectors(player.position, npc.position);
+        direction.subVectors(target.position, npc.position);
         direction.y = 0;
         direction.normalize();
 

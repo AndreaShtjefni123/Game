@@ -120,6 +120,32 @@ export function updateUltimate(delta) {
 
 // ── internal ──────────────────────────────────────────────────────────────────
 
+export function activateUltimateAt(position) {
+    if (charge < CHARGE_TIME) return;
+    charge = 0;
+    updateUI();
+    for (let i = 0; i < DUCK_COUNT; i++) {
+        let mesh;
+        if (duckTemplate) {
+            mesh = duckTemplate.clone(true);
+            mesh.scale.set(0.8, 0.8, 0.8);
+        } else {
+            mesh = new THREE.Mesh(
+                new THREE.SphereGeometry(0.4, 8, 8),
+                new THREE.MeshStandardMaterial({ color: 0xffdd00 })
+            );
+        }
+        const angle = (i / DUCK_COUNT) * Math.PI * 2;
+        mesh.position.set(
+            position.x + Math.sin(angle) * 2,
+            0.5,
+            position.z + Math.cos(angle) * 2
+        );
+        sceneRef.add(mesh);
+        activeDucks.push({ mesh, timeLeft: DUCK_LIFE });
+    }
+}
+
 function activate() {
     charge = 0;
     updateUI();

@@ -43,6 +43,10 @@ export function getHealth() {
     return playerHealth;
 }
 
+export function setHealth(value) {
+    playerHealth = Math.max(0, Math.min(MAX_HEALTH, value));
+}
+
 export function resetHealth() {
     playerHealth = MAX_HEALTH;
     lastHitTime = -Infinity;

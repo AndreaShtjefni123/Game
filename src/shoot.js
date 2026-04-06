@@ -65,6 +65,36 @@ export function shoot(event, camera, player, scene) {
     bullets.push({ mesh: bullet, dir: direction });
 }
 
+export function shootFromRemote(position, dirX, dirZ, scene) {
+    const direction = new THREE.Vector3(dirX, 0, dirZ).normalize();
+    const bullet = makeBulletMesh();
+    bullet.position.set(position.x, position.y, position.z);
+    bullet.rotation.y = Math.atan2(direction.x, direction.z);
+    scene.add(bullet);
+    bullets.push({ mesh: bullet, dir: direction });
+}
+
+const _clientBullets = [];
+
+export function syncBullets(scene, bulletData) {
+    // Remove excess
+    while (_clientBullets.length > bulletData.length) {
+        const mesh = _clientBullets.pop();
+        scene.remove(mesh);
+    }
+    // Add missing
+    while (_clientBullets.length < bulletData.length) {
+        const mesh = makeBulletMesh();
+        scene.add(mesh);
+        _clientBullets.push(mesh);
+    }
+    // Update positions
+    for (let i = 0; i < bulletData.length; i++) {
+        _clientBullets[i].position.set(bulletData[i].x, 0, bulletData[i].z);
+        _clientBullets[i].rotation.y = Math.atan2(bulletData[i].dx, bulletData[i].dz);
+    }
+}
+
 export function updateBullets(bullets, npcs, walls, scene) { // walls added here
     let killsThisFrame = 0;
     for (let i = bullets.length - 1; i >= 0; i--) {

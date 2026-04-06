@@ -9,6 +9,14 @@ const MAX_PICKUPS = 5;
 
 const loader = new GLTFLoader();
 
+// Pre-load a template for client-side sync
+let popcornTemplate = null;
+loader.load('/scriptpopcorn.glb', (gltf) => {
+    popcornTemplate = gltf.scene;
+    popcornTemplate.scale.set(1.5, 1.5, 1.5);
+    popcornTemplate.rotation.y = Math.PI / 2;
+});
+
 function loadPopcorn(scene, position) {
     loader.load('/scriptpopcorn.glb', (gltf) => {
         const popcorn = gltf.scene;
@@ -78,6 +86,35 @@ export function updatePickups(scene, player) {
             scene.remove(popcorn);
             pickups.splice(i, 1);
         }
+    }
+}
+
+const _clientPickups = [];
+
+export function syncPickups(scene, pickupData) {
+    // Remove excess
+    while (_clientPickups.length > pickupData.length) {
+        const mesh = _clientPickups.pop();
+        scene.remove(mesh);
+    }
+    // Add missing
+    while (_clientPickups.length < pickupData.length) {
+        let mesh;
+        if (popcornTemplate) {
+            mesh = popcornTemplate.clone(true);
+        } else {
+            mesh = new THREE.Mesh(
+                new THREE.SphereGeometry(0.5, 8, 8),
+                new THREE.MeshStandardMaterial({ color: 0xffcc00 })
+            );
+            mesh.scale.set(1.5, 1.5, 1.5);
+        }
+        scene.add(mesh);
+        _clientPickups.push(mesh);
+    }
+    // Update positions
+    for (let i = 0; i < pickupData.length; i++) {
+        _clientPickups[i].position.set(pickupData[i].x, 0.5, pickupData[i].z);
     }
 }
 
