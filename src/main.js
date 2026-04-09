@@ -9,10 +9,8 @@ import { updatePickups, startPickupSpawner } from "./pickup.js";
 import { checkLevelUp, getCurrentLevel } from "./levels.js";
 import { initUltimate, updateUltimate } from "./ultimate.js";
 
-// ── WEBSOCKET — wss:// auto-detect (Phase 12) ─────────────────────────────────
-const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-const wsHost   = location.hostname === 'localhost' ? 'localhost:3000' : `${location.hostname}:3000`;
-const socket   = new WebSocket(`${protocol}://${wsHost}`);
+// ── WEBSOCKET — created only when Multiplayer is chosen ──────────────────────
+let socket = null;
 
 // ── MULTIPLAYER STATE ─────────────────────────────────────────────────────────
 let myId   = null;
@@ -226,9 +224,9 @@ controls.maxDistance  = 80;
 function triggerGameOver(reason) {
     if (gameOver) return;
     gameOver = true;
-    if (myRole === 'guest' && socket.readyState === 1) {
+    if (myRole === 'guest' && socket && socket.readyState === 1) {
         socket.send(JSON.stringify({ type: 'guestDied' }));
-    } else if (myRole === 'host' && socket.readyState === 1) {
+    } else if (myRole === 'host' && socket && socket.readyState === 1) {
         socket.send(JSON.stringify({ type: 'gameOver', reason: reason ?? 'npc_contact' }));
     }
     showFinalTime();
@@ -253,7 +251,7 @@ function startGame() {
 
         // NPC sync interval — every 200ms host sends position corrections to guests (Phase 8)
         setInterval(() => {
-            if (socket.readyState !== 1 || guests.size === 0) return;
+            if (!socket || socket.readyState !== 1 || guests.size === 0) return;
             const moved = npcs.filter(n =>
                 n.userData.lastSyncPos && n.position.distanceTo(n.userData.lastSyncPos) > 0.1
             ).map(n => ({ id: n.userData.id, x: n.position.x, z: n.position.z }));
@@ -271,12 +269,18 @@ function startGame() {
 function spawnNPCsAndSync(count) {
     recentlySpawned.length = 0;
     createNPCs(count, scene, player);
-    if (guests.size > 0 && socket.readyState === 1) {
+    if (guests.size > 0 && socket && socket.readyState === 1) {
         const batch = recentlySpawned.map(n => ({ id: n.userData.id, x: n.position.x, z: n.position.z }));
         if (batch.length > 0) socket.send(JSON.stringify({ type: 'npcSpawned', npcs: batch }));
     }
     recentlySpawned.length = 0;
 }
+
+// ── MULTIPLAYER CONNECT — called only when Multiplayer is chosen ──────────────
+function connectMultiplayer() {
+    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsHost   = location.hostname === 'localhost' ? 'localhost:3000' : `${location.hostname}:3000`;
+    socket = new WebSocket(`${protocol}://${wsHost}`);
 
 // ── SOCKET MESSAGES ───────────────────────────────────────────────────────────
 socket.onmessage = (event) => {
@@ -494,6 +498,20 @@ document.getElementById('joinBtn').addEventListener('click', () => {
     document.getElementById('lobbyError').textContent = '';
     socket.send(JSON.stringify({ type: 'joinRoom', code }));
 });
+} // end connectMultiplayer()
+
+// ── MAIN MENU BUTTONS ─────────────────────────────────────────────────────────
+document.getElementById('spBtn').addEventListener('click', () => {
+    document.getElementById('mainMenu').style.display = 'none';
+    myRole = 'host';
+    startGame();
+});
+
+document.getElementById('mpBtn').addEventListener('click', () => {
+    document.getElementById('mainMenu').style.display = 'none';
+    document.getElementById('lobby').style.display = 'flex';
+    connectMultiplayer();
+});
 
 // ── GAME LOOP ─────────────────────────────────────────────────────────────────
 const SEND_RATE   = 16; // 60Hz position broadcast (Phase 13)
@@ -572,7 +590,7 @@ function animate() {
         for (const npcId of killedNpcIds) {
             addKill();
             npcById.delete(npcId);
-            if (socket.readyState === 1) {
+            if (socket && socket.readyState === 1) {
                 socket.send(JSON.stringify({ type: 'npcKilled', id: npcId, kills: totalKills }));
             }
         }
@@ -581,7 +599,7 @@ function animate() {
         }
 
         // Broadcast boss HP after hit so all guests update their bar
-        if (bossHit && socket.readyState === 1 && guests.size > 0) {
+        if (bossHit && socket && socket.readyState === 1 && guests.size > 0) {
             socket.send(JSON.stringify({ type: 'bossHit', hp: newBossHp }));
         }
 
@@ -605,7 +623,7 @@ function animate() {
                 if (new THREE.Box3().setFromObject(npcs[i]).intersectsBox(guestBox)) {
                     gs.hp = Math.max(0, gs.hp - 20);
                     gs.lastHitTime = Date.now();
-                    if (socket.readyState === 1) {
+                    if (socket && socket.readyState === 1) {
                         socket.send(JSON.stringify({
                             type: 'playerDamaged', to: guestId, guestId, amount: 20, hp: gs.hp
                         }));
@@ -630,7 +648,7 @@ function animate() {
         updatePickups(scene, player);
 
         // Drain recentlySpawned — catches boss minion spawns from updateNPCs (Phase 6)
-        if (recentlySpawned.length > 0 && guests.size > 0 && socket.readyState === 1) {
+        if (recentlySpawned.length > 0 && guests.size > 0 && socket && socket.readyState === 1) {
             const batch = recentlySpawned.map(n => ({ id: n.userData.id, x: n.position.x, z: n.position.z }));
             socket.send(JSON.stringify({ type: 'npcSpawned', npcs: batch }));
         }
@@ -640,7 +658,7 @@ function animate() {
         checkLevelUp(totalKills, scene, npcs, player, (clearedIds) => {
             for (const id of clearedIds) {
                 npcById.delete(id);
-                if (socket.readyState === 1) {
+                if (socket && socket.readyState === 1) {
                     socket.send(JSON.stringify({ type: 'npcKilled', id, kills: totalKills }));
                 }
             }
@@ -667,7 +685,7 @@ function animate() {
     updateUltimate(delta);
 
     // ── SEND POSITION 60Hz (Phase 13) with backpressure guard (Phase 12) ──────
-    if (myId && socket.readyState === 1 && now - lastSendTime > SEND_RATE) {
+    if (myId && socket && socket.readyState === 1 && now - lastSendTime > SEND_RATE) {
         if (socket.bufferedAmount < 8192) {
             lastSendTime = now;
             socket.send(JSON.stringify({

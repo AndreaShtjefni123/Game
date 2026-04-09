@@ -9,8 +9,15 @@
 </head>
 
 <body>
-  <!-- ── LOBBY ── shown before game starts, hidden once role is assigned ──── -->
-  <div id="lobby" style="position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;z-index:200;font-family:Arial,sans-serif;color:white;">
+  <!-- ── MAIN MENU ── first screen: Singleplayer / Multiplayer ──────────── -->
+  <div id="mainMenu" style="position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;z-index:300;font-family:Arial,sans-serif;color:white;">
+    <h1 style="font-size:52px;margin:0;text-shadow:0 0 20px #ffdd00;">🦆 Duck Survival</h1>
+    <button id="spBtn" style="padding:16px 0;font-size:22px;cursor:pointer;background:#ffdd00;border:none;border-radius:8px;font-weight:bold;width:220px;">Singleplayer</button>
+    <button id="mpBtn" style="padding:16px 0;font-size:22px;cursor:pointer;background:#4caf50;color:white;border:none;border-radius:8px;font-weight:bold;width:220px;">Multiplayer</button>
+  </div>
+
+  <!-- ── LOBBY ── shown when Multiplayer is chosen ──────────────────────── -->
+  <div id="lobby" style="position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.92);display:none;flex-direction:column;align-items:center;justify-content:center;gap:18px;z-index:200;font-family:Arial,sans-serif;color:white;">
     <h1 style="font-size:48px;margin:0;text-shadow:0 0 20px #ffdd00;">🦆 Duck Survival</h1>
     <button id="createBtn" style="padding:14px 36px;font-size:20px;cursor:pointer;background:#ffdd00;border:none;border-radius:8px;font-weight:bold;">Create Game</button>
     <div id="roomDisplay" style="display:none;text-align:center;font-size:18px;">
