@@ -1,216 +1,76 @@
-// Three.js is the core 3D library — handles scenes, cameras, meshes, lighting
 import * as THREE from "three";
-// OrbitControls lets the player zoom with the scroll wheel
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-// GLTFLoader lets us load .glb model files (the duck player model)
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-// NPC array + functions to create and update foxes/boss each frame
-import { npcs, createNPCs, updateNPCs } from "./npc.js";
-// bullets array + shoot (fires on click) + updateBullets (moves them + checks hits)
-import { bullets, shoot, updateBullets } from "./shoot.js";
-// Timer and kill counter — updateClock ticks every frame, addKill increments the counter
+import { npcs, createNPCs, updateNPCs, createBoss, npcById, recentlySpawned, createNPCMeshAt, createBossMeshAt } from "./npc.js";
+import { bullets, shoot, updateBullets, spawnBullet } from "./shoot.js";
 import { updateClock, showFinalTime, showFinalKills, addKill, totalKills } from "./clock.js";
-// Player health system — takeDamage, healing, health bar UI, game over callback
 import { takeDamage, updateHealthBar, setDuckMesh, setGameOverCallback } from "./health.js";
-// Popcorn pickups that heal the player when touched
 import { updatePickups, startPickupSpawner } from "./pickup.js";
-// Level progression — checks kill count and triggers level-up when target is hit
 import { checkLevelUp, getCurrentLevel } from "./levels.js";
-// Ultimate ability — charges over time, fires mini ducks on Q press
 import { initUltimate, updateUltimate } from "./ultimate.js";
 
-// ── MULTIPLAYER — WebSocket connection ────────────────────────────────────────
+// ── WEBSOCKET — wss:// auto-detect (Phase 12) ─────────────────────────────────
+const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+const wsHost   = location.hostname === 'localhost' ? 'localhost:3000' : `${location.hostname}:3000`;
+const socket   = new WebSocket(`${protocol}://${wsHost}`);
 
-// Connect to the server as soon as the page loads.
-// window.location.hostname works on both localhost and a real domain without changing this line.
-// The server will immediately reply with an 'init' message containing our unique ID.
-const socket = new WebSocket(`ws://${window.location.hostname}:3000`);
+// ── MULTIPLAYER STATE ─────────────────────────────────────────────────────────
+let myId   = null;
+let myRole = null;      // 'host' | 'guest'
+let gameStarted = false;
+let gameOver    = false;
 
-// myId stays null until the server tells us who we are.
-// We need it before we can send any labelled messages.
-let myId = null;
+// Host tracks each guest's last known position (from move messages) and HP
+const guestStates = new Map(); // guestId → { x, z, hp, lastHitTime }
+const guests      = new Set(); // guestIds who have sent 'ready'
 
-// remotePlayers holds a Three.js Group for every OTHER player.
-// Key = their ID string, Value = their Group in the scene.
-// When we get a 'move' message we update that group's position.
-const remotePlayers = {};
-
-// Each remote duck needs its own AnimationMixer to play the
-// waddle clip independently from our own mixer.
-const remotePlayerMixers = {};
-
-// We send our position 20 times per second (every 50 ms).
-// Sending every frame (60/s) would flood the server needlessly.
-const SEND_RATE = 50; // milliseconds
-let lastSendTime = 0;
-
-// ── MULTIPLAYER — Messages arriving FROM the server ───────────────────────────
-
-// onmessage fires every time the server pushes data to us.
-// We read data.type to decide what to do with it.
-socket.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-
-    // 'init' — sent once on connect, gives us our permanent ID
-    if (data.type === 'init') {
-        myId = data.id;
-        console.log('Connected! My ID:', myId);
-    }
-
-    // 'playerJoined' — a new browser connected, or the server is catching us up on who is already here.
-    // Either way, create a duck in our scene for that player.
-    if (data.type === 'playerJoined') {
-        spawnRemotePlayer(data.id);
-    }
-
-    // 'playerLeft' — that player closed their tab or lost connection.
-    // Remove their character so we're not left with a ghost.
-    if (data.type === 'playerLeft') {
-        if (remotePlayers[data.id]) {
-            scene.remove(remotePlayers[data.id]);
-            delete remotePlayers[data.id];
-            delete remotePlayerMixers[data.id];
-        }
-    }
-
-    // 'move' — another player moved. data.x/y/z is their new position,
-    // data.ry is their Y rotation so they face the right direction.
-    if (data.type === 'move') {
-        if (remotePlayers[data.id]) {
-            remotePlayers[data.id].position.set(data.x, data.y, data.z);
-            remotePlayers[data.id].rotation.y = data.ry;
-        }
-    }
-};
-
-socket.onopen  = () => console.log('WebSocket connected to server');
-socket.onerror = (e) => console.warn('WebSocket error:', e);
-socket.onclose = () => console.log('Disconnected from server');
-
-// ── MULTIPLAYER — Spawn a visual for a remote player ─────────────────────────
-
-// We clone the duck GLB so they look the same as us.
-// If the model hasn't loaded yet we use a blue fallback box;
-// it gets upgraded automatically once the GLB is ready.
-// We also add a floating nametag so players can tell each other apart.
-let duckTemplateForRemote = null; // set once our own duck loads
-
-function spawnRemotePlayer(id) {
-    const group = new THREE.Group();
-
-    if (duckTemplateForRemote) {
-        // Clone the duck — every remote player gets their own independent copy
-        const remoteDuck = duckTemplateForRemote.clone(true);
-        remoteDuck.scale.set(1.5, 1.5, 1.5);
-        remoteDuck.rotation.y = Math.PI;
-        group.add(remoteDuck);
-
-        // Give the remote duck its own waddle animation
-        if (remoteDuck.animations && remoteDuck.animations.length > 0) {
-            const m = new THREE.AnimationMixer(remoteDuck);
-            m.clipAction(remoteDuck.animations[0]).play();
-            remotePlayerMixers[id] = m;
-        }
-    } else {
-        // Fallback: blue box until the duck model finishes loading
-        const geo = new THREE.BoxGeometry(1.5, 2, 1.5);
-        const mat = new THREE.MeshStandardMaterial({ color: 0x00aaff });
-        group.add(new THREE.Mesh(geo, mat));
-    }
-
-    // Floating nametag drawn onto a canvas then used as a texture
-    const canvas = document.createElement('canvas');
-    canvas.width = 128;
-    canvas.height = 32;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = 'white';
-    ctx.font = 'bold 20px Arial';
-    ctx.fillText('Player ' + id.substring(0, 4), 4, 24);
-    const texture = new THREE.CanvasTexture(canvas);
-    const labelMesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(3, 0.75),
-        new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false })
-    );
-    labelMesh.position.y = 3.5;          // float above the duck
-    labelMesh.rotation.x = -Math.PI / 8; // tilt slightly toward camera
-    group.add(labelMesh);
-
-    scene.add(group);
-    remotePlayers[id] = group;
-}
+// Wall seed — host generates, guest receives via init
+let wallSeed  = null;
+let wallBoxes = []; // pre-computed Box3 array after createWalls (Phase 0)
 
 // ── SCENE ─────────────────────────────────────────────────────────────────────
-
-// The scene is the container for every 3D object — meshes, lights, camera targets
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('skyblue'); // sets the sky/background color
+scene.background = new THREE.Color('skyblue');
 
-// ── CAMERA ────────────────────────────────────────────────────────────────────
+// ── CAMERA + RENDERER ─────────────────────────────────────────────────────────
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 500);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
 
-const fov    = 60;                                       // field of view in degrees — how wide the view is
-const aspect = window.innerWidth / window.innerHeight;   // screen width/height ratio
-const near   = 1;                                        // objects closer than this won't render
-const far    = 500;                                      // objects further than this won't render
-const camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
-
-// ── RENDERER ──────────────────────────────────────────────────────────────────
-
-// WebGLRenderer draws the Three.js scene onto a <canvas> element
-const renderer = new THREE.WebGLRenderer({ antialias: true }); // antialias = smoother edges
-renderer.setSize(window.innerWidth, window.innerHeight);        // fill the whole browser window
-document.body.appendChild(renderer.domElement);                 // add the canvas to the page
-
-// When the browser window is resized, update camera and renderer to match
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix(); // must call this after changing camera properties
+    camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // ── PLAYER ────────────────────────────────────────────────────────────────────
-
-// A Group is an empty container — it has position/rotation but no visible mesh
-// We use it so player.position works immediately before the GLB model finishes loading
 const player = new THREE.Group();
 scene.add(player);
 
-// Gate that prevents the game loop from running until the duck model is ready
 let modelLoaded = false;
-// Tracks the timestamp of the last frame — used to calculate delta time
-let lastTime = performance.now();
+let lastTime    = performance.now();
+let mixer       = null;
+let duckTemplateForRemote = null;
 
-// Animation mixer and waddle action — set once the GLB loads
-let mixer = null;
-let waddleAction = null;
-
-// Load the duck .glb model asynchronously
-const loader = new GLTFLoader();
-loader.load(
+const duckLoader = new GLTFLoader();
+duckLoader.load(
     "/scriptduck.glb",
     (gltf) => {
-        const duck = gltf.scene; // gltf.scene is the root object of the loaded model
-
-        // Remove cameras and lights baked into the Blender export
-        // They conflict with the game's own lighting setup
+        const duck = gltf.scene;
         const toRemove = [];
-        duck.traverse((child) => {
-            if (child.isCamera || child.isLight) toRemove.push(child);
-        });
+        duck.traverse((child) => { if (child.isCamera || child.isLight) toRemove.push(child); });
         toRemove.forEach((obj) => obj.parent.remove(obj));
-
-        duck.scale.set(1.5, 1.5, 1.5);  // scale the duck to match the game world
-        duck.rotation.y = Math.PI;       // rotate 180° so the duck faces forward
-
-        player.add(duck);           // attach the mesh to the player group
-        setDuckMesh(duck);          // give health.js a reference so it can flash on damage
-        modelLoaded = true;         // unlock the game loop — rendering can begin
-
-        // Cache the duck so spawnRemotePlayer() can clone it for other players.
-        // Also upgrade any blue-box placeholders that were created before this loaded.
+        duck.scale.set(1.5, 1.5, 1.5);
+        duck.rotation.y = Math.PI;
+        player.add(duck);
+        setDuckMesh(duck);
+        modelLoaded = true;
         duckTemplateForRemote = duck;
+
+        // Upgrade any blue-box placeholders that were spawned before model loaded
         for (const id in remotePlayers) {
             const existing = remotePlayers[id];
-            // Only upgrade fallback boxes (they have exactly 1 plain Mesh child)
             if (existing.children.length === 1 && existing.children[0].isMesh) {
                 scene.remove(existing);
                 delete remotePlayers[id];
@@ -218,329 +78,614 @@ loader.load(
             }
         }
 
-        // Set up the Waddle animation if the GLB includes one
         if (gltf.animations && gltf.animations.length > 0) {
-            console.log("🦆 Animations found:", gltf.animations.map(a => a.name));
             mixer = new THREE.AnimationMixer(duck);
-            const waddleClip = gltf.animations.find(a => a.name.toLowerCase() === "waddle")
-                ?? gltf.animations[0]; // fallback to first clip if "waddle" isn't found
-            if (waddleClip) {
-                waddleAction = mixer.clipAction(waddleClip);
-                waddleAction.play();
-                console.log("✅ Playing animation:", waddleClip.name);
-            }
-        } else {
-            console.warn("⚠️ No animations found in duck GLB.");
+            const clip = gltf.animations.find(a => a.name.toLowerCase() === 'waddle') ?? gltf.animations[0];
+            if (clip) mixer.clipAction(clip).play();
         }
-
         console.log("✅ Duck model loaded!");
     },
-    (progress) => {
-        console.log(`Loading duck: ${Math.round((progress.loaded / progress.total) * 100)}%`);
-    },
-    (error) => {
-        console.error("❌ Failed to load duck model:", error);
-        // Fallback: add a yellow sphere so the game is still playable
-        const fallbackGeo = new THREE.SphereGeometry(1, 32, 16);
-        const fallbackMat = new THREE.MeshStandardMaterial({ color: 0xffff00 });
-        const fallbackMesh = new THREE.Mesh(fallbackGeo, fallbackMat);
-        player.add(fallbackMesh);
+    undefined,
+    (err) => {
+        console.error("❌ Failed to load duck model:", err);
+        player.add(new THREE.Mesh(
+            new THREE.SphereGeometry(1, 32, 16),
+            new THREE.MeshStandardMaterial({ color: 0xffff00 })
+        ));
         modelLoaded = true;
     }
 );
 
-// ── WALLS ─────────────────────────────────────────────────────────────────────
+// ── REMOTE PLAYERS ────────────────────────────────────────────────────────────
+const remotePlayers      = {};
+const remotePlayerMixers = {};
 
-const walls = []; // shared array — npc.js and shoot.js both read this for collision
+function spawnRemotePlayer(id) {
+    if (remotePlayers[id]) return;
+    const group = new THREE.Group();
 
-function createWalls(amount) {
+    if (duckTemplateForRemote) {
+        const remoteDuck = duckTemplateForRemote.clone(true);
+        remoteDuck.scale.set(1.5, 1.5, 1.5);
+        remoteDuck.rotation.y = Math.PI;
+        group.add(remoteDuck);
+        if (remoteDuck.animations && remoteDuck.animations.length > 0) {
+            const m = new THREE.AnimationMixer(remoteDuck);
+            m.clipAction(remoteDuck.animations[0]).play();
+            remotePlayerMixers[id] = m;
+        }
+    } else {
+        group.add(new THREE.Mesh(
+            new THREE.BoxGeometry(1.5, 2, 1.5),
+            new THREE.MeshStandardMaterial({ color: 0x00aaff })
+        ));
+    }
+
+    // Floating nametag
+    const canvas = document.createElement('canvas');
+    canvas.width = 128; canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = 'white'; ctx.font = 'bold 20px Arial';
+    ctx.fillText('Player ' + id.substring(0, 6), 4, 24);
+    const label = new THREE.Mesh(
+        new THREE.PlaneGeometry(3, 0.75),
+        new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, depthWrite: false })
+    );
+    label.position.y  = 3.5;
+    label.rotation.x  = -Math.PI / 8;
+    group.add(label);
+
+    // Lerp targets for smooth 60Hz interpolation (Phase 13)
+    group.userData.targetPosition = new THREE.Vector3();
+    group.userData.targetRY       = 0;
+
+    scene.add(group);
+    remotePlayers[id] = group;
+}
+
+// ── WALLS — seeded RNG (Phase 4) ──────────────────────────────────────────────
+const walls = [];
+
+// Mulberry32 seeded PRNG — deterministic on both host and guest given the same seed
+function mulberry32(seed) {
+    return function () {
+        seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+        let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+}
+
+function createWalls(amount, seedValue) {
+    const rng = seedValue != null ? mulberry32(seedValue) : () => Math.random();
     for (let i = 0; i < amount; i++) {
-        const wallGeo = new THREE.BoxGeometry(20, 10, 1);                    // 20 wide, 10 tall, 1 thick
-        const wallMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 }); // brown color
-        const wall = new THREE.Mesh(wallGeo, wallMat);
-
-        // Place the wall at a random position within the play area
-        wall.position.set(
-            Math.random() * 70 - 35, // random X between -35 and +35
-            4,                        // Y=4 so the bottom sits near ground level
-            Math.random() * 70 - 35  // random Z between -35 and +35
+        const wall = new THREE.Mesh(
+            new THREE.BoxGeometry(20, 10, 1),
+            new THREE.MeshStandardMaterial({ color: 0x8B4513 })
         );
+        wall.position.set(rng() * 70 - 35, 4, rng() * 70 - 35);
+        wall.rotation.y = rng() < 0.5 ? 0 : Math.PI / 2;
 
-        // Randomly rotate the wall to face horizontally or vertically
-        if (Math.random() < 0.5) {
-            wall.rotation.y = 0;           // horizontal wall
-        } else {
-            wall.rotation.y = Math.PI / 2; // vertical wall (90 degrees)
-        }
+        if (wall.position.distanceTo(player.position) < 8) { i--; continue; }
 
-        // Reject this wall if it's too close to the player's starting position
-        // Prevents the player from spawning trapped behind a wall
-        if (wall.position.distanceTo(player.position) < 8) {
-            i--; // decrement so the loop retries this slot
-            continue;
-        }
-
-        // Reject this wall if it overlaps an already-placed wall
-        // Prevents walls from clustering together and blocking huge areas
         let overlapping = false;
         for (let j = 0; j < walls.length; j++) {
-            const dist = wall.position.distanceTo(walls[j].position);
-            if (dist < 20) {
-                overlapping = true;
-                break;
-            }
+            if (wall.position.distanceTo(walls[j].position) < 20) { overlapping = true; break; }
         }
+        if (overlapping) { i--; continue; }
 
-        if (overlapping) {
-            i--; // retry this slot
-            continue;
-        }
-
-        scene.add(wall);   // add to the Three.js scene so it renders
-        walls.push(wall);  // add to the array so collision code can find it
+        scene.add(wall);
+        walls.push(wall);
     }
+    // Pre-compute Box3 once — passed to updateNPCs and updateBullets every frame (Phase 0)
+    wallBoxes = walls.map(w => new THREE.Box3().setFromObject(w));
 }
-createWalls(10); // spawn 10 walls at game start
 
-// ── FLOOR ─────────────────────────────────────────────────────────────────────
-
-const floorGeometry = new THREE.PlaneGeometry(100, 100);                    // flat 100x100 plane
-const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 }); // green grass color
-const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-floor.rotation.x = -Math.PI / 2; // rotate from vertical (default) to flat/horizontal
-floor.position.y = -1;            // push it slightly below the player feet level
+// ── FLOOR & GRID ──────────────────────────────────────────────────────────────
+const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(100, 100),
+    new THREE.MeshStandardMaterial({ color: 0x228B22 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = -1;
 scene.add(floor);
 
-// Grid overlay drawn just above the floor so you can see player/NPC movement
 const grid = new THREE.GridHelper(100, 50, 0x000000, 0x000000);
-grid.position.y = -0.99;          // slightly above the floor to prevent z-fighting (flickering)
-grid.material.opacity = 0.3;      // semi-transparent so it doesn't overpower the green floor
+grid.position.y = -0.99;
+grid.material.opacity    = 0.3;
 grid.material.transparent = true;
 scene.add(grid);
 
 // ── LIGHTING ──────────────────────────────────────────────────────────────────
-
-// MeshStandardMaterial requires light to be visible — without lights everything is black
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.4); // soft fill light from all directions
-scene.add(ambientLight);
-const sunLight = new THREE.DirectionalLight(0xffffff, 1.2); // bright directional light like the sun
-sunLight.position.set(5, 10, 7);                            // position determines shadow angle
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
+sunLight.position.set(5, 10, 7);
 scene.add(sunLight);
 
 // ── INPUT ─────────────────────────────────────────────────────────────────────
-
-// keys{} tracks which keys are currently held down
-// keydown sets true, keyup sets false — checked every frame in the move logic
 const keys = {};
 window.addEventListener('keydown', (e) => keys[e.key] = true);
 window.addEventListener('keyup',   (e) => keys[e.key] = false);
-
-// Left mouse click fires a bullet toward the mouse cursor position
 window.addEventListener('mousedown', (e) => {
-    if (e.button === 0) { // 0 = left button, ignore right-click and middle-click
-        shoot(e, camera, player, scene);
+    if (e.button === 0 && gameStarted && !gameOver) {
+        shoot(e, camera, player, scene, socket, myId);
     }
 });
 
-// ── CAMERA SETUP ──────────────────────────────────────────────────────────────
-
-// Top-down view — camera sits directly above the origin looking straight down
+// ── CAMERA ────────────────────────────────────────────────────────────────────
 camera.position.set(0, 40, 0);
 camera.lookAt(0, 0, 0);
-
-// OrbitControls — only zoom is enabled, no rotation or panning
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enablePan    = false;
-controls.enableRotate = false; // top-down — no orbiting
-controls.enableZoom   = true;  // scroll wheel zooms in/out
-controls.minDistance  = 10;    // closest zoom
-controls.maxDistance  = 80;    // farthest zoom
+controls.enableRotate = false;
+controls.enableZoom   = true;
+controls.minDistance  = 10;
+controls.maxDistance  = 80;
 
-// ── GAME INIT ─────────────────────────────────────────────────────────────────
-
-createNPCs(3, scene, player);        // spawn 3 foxes to start the game
-startPickupSpawner(scene, walls);    // begin the popcorn pickup spawn loop
-initUltimate(scene, player, npcs);   // set up the Q ultimate ability
-
-let gameOver = false;
-
-// Called by health.js when player HP reaches 0
-// Stops the game loop and shows the game over screen
-function triggerGameOver() {
+// ── GAME OVER ─────────────────────────────────────────────────────────────────
+function triggerGameOver(reason) {
+    if (gameOver) return;
     gameOver = true;
-    showFinalTime();  // display how long the player survived
-    showFinalKills(); // display final kill count
+    if (myRole === 'guest' && socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: 'guestDied' }));
+    } else if (myRole === 'host' && socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: 'gameOver', reason: reason ?? 'npc_contact' }));
+    }
+    showFinalTime();
+    showFinalKills();
     document.getElementById('gameOver').style.display = 'flex';
 }
-setGameOverCallback(triggerGameOver); // register so health.js can call it
+setGameOverCallback(() => triggerGameOver('npc_contact'));
 
-// ── GAME LOOP ─────────────────────────────────────────────────────────────────
+// ── GAME INIT ─────────────────────────────────────────────────────────────────
+function startGame() {
+    if (gameStarted) return;
+    gameStarted = true;
+    document.getElementById('lobby').style.display = 'none';
 
-// animate() is called ~60 times per second via requestAnimationFrame
-// Everything that moves or changes each frame is updated here
-function animate() {
-    requestAnimationFrame(animate); // schedules the next frame
-    if (gameOver) return;           // stop updating everything once the game ends
-    if (!modelLoaded) return;       // don't start until the duck model has loaded
+    if (myRole === 'host') {
+        wallSeed = Math.floor(Math.random() * 1_000_000);
+        createWalls(10, wallSeed);
+        createNPCs(3, scene, player);
+        recentlySpawned.length = 0; // no guests yet — discard initial batch
+        startPickupSpawner(scene, walls);
+        initUltimate(scene, player, npcs);
 
-    // delta = seconds since the last frame (usually ~0.016 at 60fps)
-    // Used for timers so they run at the same speed regardless of frame rate
-    const now = performance.now();
-    const delta = (now - lastTime) / 1000;
-    lastTime = now;
+        // NPC sync interval — every 200ms host sends position corrections to guests (Phase 8)
+        setInterval(() => {
+            if (socket.readyState !== 1 || guests.size === 0) return;
+            const moved = npcs.filter(n =>
+                n.userData.lastSyncPos && n.position.distanceTo(n.userData.lastSyncPos) > 0.1
+            ).map(n => ({ id: n.userData.id, x: n.position.x, z: n.position.z }));
+            if (moved.length === 0) return;
+            socket.send(JSON.stringify({ type: 'npcSync', npcs: moved }));
+            npcs.forEach(n => { if (n.userData.lastSyncPos) n.userData.lastSyncPos.copy(n.position); });
+        }, 200);
+    } else {
+        // Guest: walls already built from init message, npcs arrive via npcSpawned
+        initUltimate(scene, player, npcs);
+    }
+}
 
-    updateClock(); // tick the survival timer and update its DOM element
+// ── HOST HELPER: spawn NPCs and broadcast to guests (Phase 6) ─────────────────
+function spawnNPCsAndSync(count) {
+    recentlySpawned.length = 0;
+    createNPCs(count, scene, player);
+    if (guests.size > 0 && socket.readyState === 1) {
+        const batch = recentlySpawned.map(n => ({ id: n.userData.id, x: n.position.x, z: n.position.z }));
+        if (batch.length > 0) socket.send(JSON.stringify({ type: 'npcSpawned', npcs: batch }));
+    }
+    recentlySpawned.length = 0;
+}
 
-    // Advance the player's waddle animation
-    if (mixer) mixer.update(delta);
+// ── SOCKET MESSAGES ───────────────────────────────────────────────────────────
+socket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
 
-    // Advance each remote player's waddle animation independently
-    for (const id in remotePlayerMixers) {
-        remotePlayerMixers[id].update(delta);
+    // ── ROOM SETUP ────────────────────────────────────────────────────────────
+    if (data.type === 'roomCreated') {
+        myId   = data.myId;
+        myRole = 'host';
+        document.getElementById('roomCode').textContent    = data.code;
+        document.getElementById('roomDisplay').style.display = 'block';
+        startGame();
+        return;
     }
 
-    // Save player position before movement — used to revert if a wall is hit
-    const previousPosition = player.position.clone();
-
-    // Get the direction the camera is facing (flattened to the ground plane)
-    // This makes WASD move relative to the camera angle, not world axes
-    const cameraDirection = new THREE.Vector3();
-    camera.getWorldDirection(cameraDirection);
-    cameraDirection.y = 0;          // ignore any vertical tilt
-    cameraDirection.normalize();    // make length 1 so speed is consistent
-
-    // Right vector is perpendicular to the camera direction — used for A/D strafing
-    const cameraRight = new THREE.Vector3();
-    cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0)).normalize();
-
-    // ── PLAYER MOVEMENT ───────────────────────────────────────────────────────
-
-    const speed = 0.18; // units per frame the player moves
-    const moveDir = new THREE.Vector3();
-
-    // Accumulate movement direction based on which keys are held
-    if (keys['w'] || keys['W']) moveDir.addScaledVector(cameraDirection, 1);   // forward
-    if (keys['s'] || keys['S']) moveDir.addScaledVector(cameraDirection, -1);  // backward
-    if (keys['a'] || keys['A']) moveDir.addScaledVector(cameraRight, -1);      // strafe left
-    if (keys['d'] || keys['D']) moveDir.addScaledVector(cameraRight, 1);       // strafe right
-
-    const isMoving = moveDir.lengthSq() > 0; // lengthSq is cheaper than length (no sqrt)
-    if (isMoving) {
-        moveDir.normalize(); // normalize so diagonal movement isn't faster than straight
-        player.position.addScaledVector(moveDir, speed);
-        // face the duck in the direction of movement
-        // Math.PI compensates for the model being exported facing the wrong way
-        player.rotation.y = Math.atan2(moveDir.x, moveDir.z);
+    if (data.type === 'roomJoined') {
+        myId   = data.myId;
+        myRole = 'guest';
+        // Wait for 'init' from host before starting
+        return;
     }
 
-    // ── PLAYER WALL COLLISION ─────────────────────────────────────────────────
+    if (data.type === 'roomError') {
+        document.getElementById('lobbyError').textContent = data.reason;
+        return;
+    }
 
-    // Build a bounding box around the player's current position
-    const playerBox = new THREE.Box3().setFromCenterAndSize(
-        player.position,
-        new THREE.Vector3(1.5, 2, 1.5) // approximate size of the duck model
-    );
-    // If the player overlaps any wall, snap back to where they were before moving
-    for (let i = 0; i < walls.length; i++) {
-        const wallBox = new THREE.Box3().setFromObject(walls[i]);
-        if (playerBox.intersectsBox(wallBox)) {
-            player.position.copy(previousPosition); // revert the move
-            break; // only need to revert once
+    // ── HOST: guest joined — send world state ─────────────────────────────────
+    if (data.type === 'guestJoined') {
+        spawnRemotePlayer(data.guestId);
+        if (socket.readyState === 1) {
+            socket.send(JSON.stringify({
+                type:    'init',
+                to:      data.guestId,
+                wallSeed,
+                hostPos: { x: player.position.x, z: player.position.z }
+            }));
         }
+        return;
     }
 
-    // ── BOUNDARY CHECK ────────────────────────────────────────────────────────
+    // HOST: guest finished building world — send current NPC state (Phase 6)
+    if (data.type === 'ready') {
+        guests.add(data.id);
+        guestStates.set(data.id, { x: 0, z: 0, hp: 100, lastHitTime: -Infinity });
+        if (socket.readyState === 1) {
+            const batch = npcs.map(n => ({ id: n.userData.id, x: n.position.x, z: n.position.z }));
+            socket.send(JSON.stringify({ type: 'npcSpawned', npcs: batch }));
+        }
+        return;
+    }
 
-    // The playable area is ±50 units — falling off the edge triggers game over
-    if (player.position.x > 50 || player.position.x < -50 ||
-        player.position.z > 50 || player.position.z < -50) {
+    // HOST: guest disconnected mid-game
+    if (data.type === 'guestLeft') {
+        if (remotePlayers[data.guestId]) {
+            scene.remove(remotePlayers[data.guestId]);
+            delete remotePlayers[data.guestId];
+            delete remotePlayerMixers[data.guestId];
+        }
+        guests.delete(data.guestId);
+        guestStates.delete(data.guestId);
+        return;
+    }
+
+    // HOST: guest HP hit 0 — remove their duck
+    if (data.type === 'guestDied') {
+        if (remotePlayers[data.id]) {
+            scene.remove(remotePlayers[data.id]);
+            delete remotePlayers[data.id];
+            delete remotePlayerMixers[data.id];
+        }
+        guests.delete(data.id);
+        guestStates.delete(data.id);
+        return;
+    }
+
+    // ── GUEST: receive world state from host ──────────────────────────────────
+    if (data.type === 'init') {
+        wallSeed = data.wallSeed;
+        createWalls(10, wallSeed);
+
+        // Spawn a duck representing the host
+        spawnRemotePlayer(data.id); // data.id = relay-attached host ID
+        if (remotePlayers[data.id]) {
+            remotePlayers[data.id].position.set(data.hostPos.x, 0, data.hostPos.z);
+            remotePlayers[data.id].userData.targetPosition.set(data.hostPos.x, 0, data.hostPos.z);
+        }
+        socket.send(JSON.stringify({ type: 'ready' }));
+        startGame();
+        return;
+    }
+
+    // GUEST: create NPC meshes from host's npcSpawned (Phase 6 / 7)
+    if (data.type === 'npcSpawned' && myRole === 'guest') {
+        for (const n of data.npcs) {
+            if (npcById.has(n.id)) continue; // already exists
+            createNPCMeshAt(scene, n.id, n.x, n.z);
+        }
+        return;
+    }
+
+    // GUEST: apply drift corrections (Phase 9)
+    if (data.type === 'npcSync' && myRole === 'guest') {
+        for (const n of data.npcs) {
+            const mesh = npcById.get(n.id);
+            if (!mesh) continue;
+            const target = new THREE.Vector3(n.x, 0, n.z);
+            const drift  = mesh.position.distanceTo(target);
+            if (drift < 0.5) {
+                // within tolerance — ignore
+            } else if (drift < 4.0) {
+                mesh.userData.correctionTarget = target;
+                mesh.userData.correctionFrames = 30;
+            } else {
+                mesh.position.copy(target); // large drift — snap immediately
+            }
+        }
+        return;
+    }
+
+    // GUEST: remove NPC confirmed dead by host (Phase 10)
+    if (data.type === 'npcKilled' && myRole === 'guest') {
+        const mesh = npcById.get(data.id);
+        if (mesh) {
+            scene.remove(mesh);
+            const idx = npcs.indexOf(mesh);
+            if (idx !== -1) npcs.splice(idx, 1);
+            npcById.delete(data.id);
+            if (mesh.userData.isBoss) {
+                document.getElementById('bossBarContainer').style.display = 'none';
+            }
+        }
+        document.getElementById('kills').textContent = `Kills: ${data.kills}`;
+        return;
+    }
+
+    // ── MOVEMENT (Phase 13) ───────────────────────────────────────────────────
+    if (data.type === 'move') {
+        // Host uses guest position for collision detection (auth comes from move messages)
+        if (myRole === 'host' && guestStates.has(data.id)) {
+            const gs = guestStates.get(data.id);
+            gs.x = data.x; gs.z = data.z;
+        }
+        // Update lerp target for smooth visual interpolation
+        if (remotePlayers[data.id]) {
+            remotePlayers[data.id].userData.targetPosition.set(data.x, data.y ?? 0, data.z);
+            remotePlayers[data.id].userData.targetRY = data.ry ?? 0;
+        }
+        return;
+    }
+
+    // ── BOSS ──────────────────────────────────────────────────────────────────
+    if (data.type === 'bossSpawned' && myRole === 'guest') {
+        if (!npcById.has(data.id)) {
+            createBossMeshAt(scene, data.id, data.x, data.z);
+        }
+        return;
+    }
+
+    if (data.type === 'bossHit' && myRole === 'guest') {
+        document.getElementById('bossBarInner').style.width = `${(data.hp / 100) * 100}%`;
+        const boss = npcs.find(n => n.userData.isBoss);
+        if (boss) boss.userData.hp = data.hp;
+        return;
+    }
+
+    // ── BULLETS ───────────────────────────────────────────────────────────────
+    // Spawn other players' bullets locally for visuals; kill authority stays on host
+    if (data.type === 'bulletSpawned') {
+        spawnBullet(scene, data.origin, data.dir, data.bulletId);
+        return;
+    }
+
+    // ── DAMAGE & END ──────────────────────────────────────────────────────────
+    if (data.type === 'playerDamaged' && myRole === 'guest') {
+        takeDamage(data.amount);
+        return;
+    }
+
+    if (data.type === 'gameOver' && myRole === 'guest') {
+        if (gameOver) return;
         gameOver = true;
         showFinalTime();
         showFinalKills();
+        document.getElementById('gameOver').querySelector('h1').textContent = 'Game Over';
         document.getElementById('gameOver').style.display = 'flex';
-        return; // stop the rest of this frame immediately
+        return;
     }
 
-    // ── NPC UPDATE ────────────────────────────────────────────────────────────
+    if (data.type === 'hostLeft') {
+        if (gameOver) return;
+        gameOver = true;
+        showFinalTime();
+        showFinalKills();
+        document.getElementById('gameOver').querySelector('h1').textContent = 'Host left the game';
+        document.getElementById('gameOver').style.display = 'flex';
+    }
+};
 
-    // Move all foxes and the boss toward the player, handle boss timers
-    // delta and scene are required for the boss's shoot/spawn timers
-    updateNPCs(npcs, player, playerBox, walls, delta, scene);
+socket.onopen  = () => console.log('WebSocket connected');
+socket.onerror = (e) => console.warn('WebSocket error:', e);
+socket.onclose = () => {
+    if (!gameOver && myRole === 'guest') triggerGameOver('hostLeft');
+};
 
-    // Check if any NPC is touching the player — deals contact damage
-    for (let i = 0; i < npcs.length; i++) {
-        const npcBox = new THREE.Box3().setFromObject(npcs[i]);
-        if (npcBox.intersectsBox(playerBox)) {
-            takeDamage(20); // 20 damage per contact hit
-            break;          // only one NPC can hit per frame to avoid instant death
+// ── LOBBY BUTTONS ─────────────────────────────────────────────────────────────
+document.getElementById('createBtn').addEventListener('click', () => {
+    document.getElementById('lobbyError').textContent = '';
+    socket.send(JSON.stringify({ type: 'createRoom' }));
+});
+
+document.getElementById('joinBtn').addEventListener('click', () => {
+    const code = document.getElementById('codeInput').value.toUpperCase().trim();
+    if (!code) return;
+    document.getElementById('lobbyError').textContent = '';
+    socket.send(JSON.stringify({ type: 'joinRoom', code }));
+});
+
+// ── GAME LOOP ─────────────────────────────────────────────────────────────────
+const SEND_RATE   = 16; // 60Hz position broadcast (Phase 13)
+let   lastSendTime = 0;
+
+function animate() {
+    requestAnimationFrame(animate);
+    if (!gameStarted || gameOver || !modelLoaded) {
+        // Keep rendering the lobby/game-over screen while idle
+        renderer.render(scene, camera);
+        return;
+    }
+
+    const now   = performance.now();
+    const delta = (now - lastTime) / 1000;
+    lastTime = now;
+
+    updateClock();
+    if (mixer) mixer.update(delta);
+    for (const id in remotePlayerMixers) remotePlayerMixers[id].update(delta);
+
+    // ── Lerp remote players toward incoming positions (Phase 13) ─────────────
+    for (const id in remotePlayers) {
+        const rp = remotePlayers[id];
+        if (!rp.userData.targetPosition) continue;
+        rp.position.lerp(rp.userData.targetPosition, 0.2);
+        if (rp.userData.targetRY !== undefined) {
+            rp.rotation.y += (rp.userData.targetRY - rp.rotation.y) * 0.2;
         }
     }
-    if (gameOver) return; // health.js may have triggered game over via takeDamage
 
-    // ── PICKUPS ───────────────────────────────────────────────────────────────
+    // ── PLAYER MOVEMENT ───────────────────────────────────────────────────────
+    const previousPosition = player.position.clone();
+    const cameraDirection  = new THREE.Vector3();
+    camera.getWorldDirection(cameraDirection);
+    cameraDirection.y = 0;
+    cameraDirection.normalize();
+    const cameraRight = new THREE.Vector3();
+    cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0)).normalize();
 
-    // Animate popcorn bobbing and check if the player walked over one
-    updatePickups(scene, player);
+    const moveDir = new THREE.Vector3();
+    if (keys['w'] || keys['W']) moveDir.addScaledVector(cameraDirection,  1);
+    if (keys['s'] || keys['S']) moveDir.addScaledVector(cameraDirection, -1);
+    if (keys['a'] || keys['A']) moveDir.addScaledVector(cameraRight,     -1);
+    if (keys['d'] || keys['D']) moveDir.addScaledVector(cameraRight,      1);
 
-    // ── HUD UPDATES ───────────────────────────────────────────────────────────
+    if (moveDir.lengthSq() > 0) {
+        moveDir.normalize();
+        player.position.addScaledVector(moveDir, 0.18);
+        player.rotation.y = Math.atan2(moveDir.x, moveDir.z);
+    }
 
-    updateHealthBar();       // sync the health bar width to current HP
-    updateUltimate(delta);   // charge the ultimate and move any active mini ducks
+    // Player wall collision
+    const playerBox = new THREE.Box3().setFromCenterAndSize(player.position, new THREE.Vector3(1.5, 2, 1.5));
+    for (let i = 0; i < wallBoxes.length; i++) {
+        if (playerBox.intersectsBox(wallBoxes[i])) { player.position.copy(previousPosition); break; }
+    }
+
+    // Boundary check
+    if (Math.abs(player.position.x) > 50 || Math.abs(player.position.z) > 50) {
+        triggerGameOver('out_of_bounds');
+        return;
+    }
+
+    // ── NPC UPDATE — both host and guest simulate locally (Phase 7) ───────────
+    updateNPCs(npcs, player, playerBox, walls, delta, scene, wallBoxes, myRole === 'host');
 
     // ── BULLETS ───────────────────────────────────────────────────────────────
+    const isHost = myRole === 'host';
+    const { killedNpcIds, bossHit, newBossHp } = updateBullets(
+        bullets, npcs, walls, scene, isHost, wallBoxes
+    );
 
-    const SPAWN_PER_KILL = 2; // how many new foxes spawn when a fox is killed
-    // Move all bullets forward and check if they hit a wall or NPC
-    // Returns how many NPCs were killed this frame
-    const killsThisFrame = updateBullets(bullets, npcs, walls, scene);
-    if (killsThisFrame > 0) {
-        for (let k = 0; k < killsThisFrame; k++) {
-            addKill(); // increment the kill counter and update the HUD
+    if (isHost) {
+        // Kill handling — update counter, send npcKilled, spawn replacements (Phase 10)
+        for (const npcId of killedNpcIds) {
+            addKill();
+            npcById.delete(npcId);
+            if (socket.readyState === 1) {
+                socket.send(JSON.stringify({ type: 'npcKilled', id: npcId, kills: totalKills }));
+            }
         }
-        createNPCs(SPAWN_PER_KILL * killsThisFrame, scene, player); // spawn replacement foxes
+        if (killedNpcIds.length > 0) {
+            spawnNPCsAndSync(2 * killedNpcIds.length);
+        }
+
+        // Broadcast boss HP after hit so all guests update their bar
+        if (bossHit && socket.readyState === 1 && guests.size > 0) {
+            socket.send(JSON.stringify({ type: 'bossHit', hp: newBossHp }));
+        }
+
+        // NPC contact — host player
+        const freshPlayerBox = new THREE.Box3().setFromCenterAndSize(player.position, new THREE.Vector3(1.5, 2, 1.5));
+        for (let i = 0; i < npcs.length; i++) {
+            if (new THREE.Box3().setFromObject(npcs[i]).intersectsBox(freshPlayerBox)) {
+                takeDamage(20);
+                break;
+            }
+        }
+        if (gameOver) return;
+
+        // NPC contact — guests (positions from move messages, 2s i-frames per guest)
+        for (const [guestId, gs] of guestStates) {
+            if (Date.now() - gs.lastHitTime < 2000) continue;
+            const guestBox = new THREE.Box3().setFromCenterAndSize(
+                new THREE.Vector3(gs.x, 0, gs.z), new THREE.Vector3(1.5, 2, 1.5)
+            );
+            for (let i = 0; i < npcs.length; i++) {
+                if (new THREE.Box3().setFromObject(npcs[i]).intersectsBox(guestBox)) {
+                    gs.hp = Math.max(0, gs.hp - 20);
+                    gs.lastHitTime = Date.now();
+                    if (socket.readyState === 1) {
+                        socket.send(JSON.stringify({
+                            type: 'playerDamaged', to: guestId, guestId, amount: 20, hp: gs.hp
+                        }));
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Boss bullets — host checks against player
+        const pb = new THREE.Box3().setFromCenterAndSize(player.position, new THREE.Vector3(1.5, 2, 1.5));
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            if (!bullets[i].mesh.userData.isEnemyBullet) continue;
+            if (new THREE.Box3().setFromObject(bullets[i].mesh).intersectsBox(pb)) {
+                takeDamage(40);
+                scene.remove(bullets[i].mesh);
+                bullets.splice(i, 1);
+            }
+        }
+
+        // Pickups — host-only collection; guests don't see pickups (future enhancement)
+        updatePickups(scene, player);
+
+        // Drain recentlySpawned — catches boss minion spawns from updateNPCs (Phase 6)
+        if (recentlySpawned.length > 0 && guests.size > 0 && socket.readyState === 1) {
+            const batch = recentlySpawned.map(n => ({ id: n.userData.id, x: n.position.x, z: n.position.z }));
+            socket.send(JSON.stringify({ type: 'npcSpawned', npcs: batch }));
+        }
+        recentlySpawned.length = 0;
+
+        // Level up — callback sends npcKilled for cleared NPCs before new wave spawns
+        checkLevelUp(totalKills, scene, npcs, player, (clearedIds) => {
+            for (const id of clearedIds) {
+                npcById.delete(id);
+                if (socket.readyState === 1) {
+                    socket.send(JSON.stringify({ type: 'npcKilled', id, kills: totalKills }));
+                }
+            }
+        });
+
+        // After level-up, new wave NPCs are in recentlySpawned — drain on next frame
+
+        document.getElementById('level').textContent = `Level ${getCurrentLevel()}`;
+
+    } else {
+        // Guest: boss bullets — remove visually; damage comes from playerDamaged
+        const pb = new THREE.Box3().setFromCenterAndSize(player.position, new THREE.Vector3(1.5, 2, 1.5));
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            if (!bullets[i].mesh.userData.isEnemyBullet) continue;
+            if (new THREE.Box3().setFromObject(bullets[i].mesh).intersectsBox(pb)) {
+                scene.remove(bullets[i].mesh);
+                bullets.splice(i, 1);
+            }
+        }
     }
 
-    // Check if any boss bullet has hit the player
-    // Enemy bullets are flagged with isEnemyBullet = true in shoot.js
-    for (let i = bullets.length - 1; i >= 0; i--) {
-        if (!bullets[i].mesh.userData.isEnemyBullet) continue; // skip player's own bullets
-        const bBox = new THREE.Box3().setFromObject(bullets[i].mesh);
-        if (bBox.intersectsBox(playerBox)) {
-            takeDamage(40);                  // boss bullets deal 40 damage
-            scene.remove(bullets[i].mesh);  // remove the bullet mesh from the scene
-            bullets.splice(i, 1);           // remove it from the bullets array
-        }
-    }
+    // ── HUD ───────────────────────────────────────────────────────────────────
+    updateHealthBar();
+    updateUltimate(delta);
 
-    // ── LEVEL UP CHECK ────────────────────────────────────────────────────────
-
-    // Compare total kills against the current level's target — triggers level-up if met
-    checkLevelUp(totalKills, scene, npcs, player);
-    document.getElementById('level').textContent = `Level ${getCurrentLevel()}`;
-
-    // ── MULTIPLAYER — Send our position to the server ─────────────────────────
-
-    // Throttle to SEND_RATE ms so we don't flood the server.
-    // Three checks: myId (server confirmed us), readyState 1 (socket open), time elapsed.
+    // ── SEND POSITION 60Hz (Phase 13) with backpressure guard (Phase 12) ──────
     if (myId && socket.readyState === 1 && now - lastSendTime > SEND_RATE) {
-        lastSendTime = now;
-        socket.send(JSON.stringify({
-            type: 'move',
-            x:  player.position.x,
-            y:  player.position.y,
-            z:  player.position.z,
-            ry: player.rotation.y  // y-axis rotation so remote players face the right way
-        }));
+        if (socket.bufferedAmount < 8192) {
+            lastSendTime = now;
+            socket.send(JSON.stringify({
+                type: 'move',
+                x:   player.position.x,
+                y:   player.position.y,
+                z:   player.position.z,
+                ry:  player.rotation.y
+            }));
+        }
     }
 
     // ── CAMERA FOLLOW ─────────────────────────────────────────────────────────
-
-    // Lock the camera above the player so it scrolls with them
-    // Y stays fixed at 40 units above (set during setup)
     camera.position.x = player.position.x;
     camera.position.z = player.position.z;
-    controls.target.copy(player.position); // keep OrbitControls centered on player
+    controls.target.copy(player.position);
     controls.update();
     renderer.render(scene, camera);
 }
-animate(); // kick off the game loop
+
+animate(); // single RAF loop — gameStarted flag gates all game logic

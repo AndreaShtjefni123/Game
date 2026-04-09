@@ -40,10 +40,12 @@ export function getKillTarget() {
 
 // Called every frame from main.js — compares totalKills to the current target
 // If the player has enough kills and we're not already mid-transition, fire doLevelUp()
-export function checkLevelUp(totalKills, scene, npcs, player) {
-    if (levelingUp) return;             // already leveling up, wait for it to finish
+// onNPCClear — optional callback called with an array of cleared NPC IDs just before
+// the npcs array is emptied. The host uses this to send npcKilled messages to guests.
+export function checkLevelUp(totalKills, scene, npcs, player, onNPCClear) {
+    if (levelingUp) return;
     if (totalKills >= killTarget) {
-        doLevelUp(scene, npcs, player);
+        doLevelUp(scene, npcs, player, onNPCClear);
     }
 }
 
@@ -57,18 +59,22 @@ export function checkLevelUp(totalKills, scene, npcs, player) {
 //  5. Show the "LEVEL X!" overlay for 1.5 seconds
 //  6. Spawn the next wave (boss at level 5, foxes otherwise)
 //  7. Unlock the guard so normal gameplay resumes
-function doLevelUp(scene, npcs, player) {
-    levelingUp = true; // lock — prevents double-trigger
+function doLevelUp(scene, npcs, player, onNPCClear) {
+    levelingUp = true;
 
-    // Advance the level and calculate the new kill target
     currentLevel++;
     killTarget = getNextKillTarget(currentLevel);
 
-    // Remove every fox from the scene and empty the npcs array
-    // Iterate backwards so splicing doesn't skip elements
+    // Notify caller (host) about which NPC IDs are being cleared so it can
+    // send npcKilled messages to guests before removing them locally
+    if (onNPCClear) {
+        const ids = npcs.map(n => n.userData.id).filter(id => id !== undefined);
+        onNPCClear(ids);
+    }
+
     for (let i = npcs.length - 1; i >= 0; i--) {
-        scene.remove(npcs[i]); // remove the 3D mesh from the scene
-        npcs.splice(i, 1);     // remove from the array
+        scene.remove(npcs[i]);
+        npcs.splice(i, 1);
     }
 
     // Reward the player with full health for clearing the level

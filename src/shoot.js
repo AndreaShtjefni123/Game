@@ -1,32 +1,26 @@
-// Three.js is needed for raycasting, vectors, and geometry
 import * as THREE from "three";
-// GLTFLoader loads the bullet .glb model
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
-// Shared array of all active bullets — main.js reads this to pass into updateBullets
+// Shared bullets array — main.js passes this into updateBullets every frame
 export const bullets = [];
 
-// Raycaster projects a ray from the camera through the mouse position into the 3D world
+// Monotonic counter for assigning unique bullet IDs (Phase 11)
+let bulletSeq = 0;
+
 const raycaster = new THREE.Raycaster();
-// An invisible flat plane at y=0 — the raycaster hits this to find where the mouse points in 3D
-const aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const aimPlane  = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
 // ── BULLET MODEL ─────────────────────────────────────────────────────────────
-
-// Load the bullet model once — all bullets clone this template
 let bulletTemplate = null;
 const bulletLoader = new GLTFLoader();
 bulletLoader.load(
-    "/sciptbullet.glb",                         // path to the bullet model in /public
+    "/sciptbullet.glb",
     (gltf) => {
         const model = gltf.scene;
-        // Strip any cameras/lights baked into the Blender export
         const toRemove = [];
-        model.traverse((child) => {
-            if (child.isCamera || child.isLight) toRemove.push(child);
-        });
+        model.traverse((child) => { if (child.isCamera || child.isLight) toRemove.push(child); });
         toRemove.forEach((obj) => obj.parent.remove(obj));
-        model.scale.set(1.2, 1.2, 1.2);        // scale up slightly from the base model size
+        model.scale.set(1.2, 1.2, 1.2);
         bulletTemplate = model;
         console.log("✅ Bullet model loaded!");
     },
@@ -34,148 +28,158 @@ bulletLoader.load(
     (err) => console.warn("⚠️ bullet.glb not found, using fallback sphere.", err)
 );
 
-// Returns a bullet mesh — clones the loaded model or falls back to a yellow sphere
 function makeBulletMesh() {
-    if (bulletTemplate) {
-        return bulletTemplate.clone(true); // clone(true) = deep clone, copies all children
-    }
-    // Fallback if the .glb didn't load — plain yellow sphere
-    const geo = new THREE.SphereGeometry(0.6, 8, 8);
-    const mat = new THREE.MeshStandardMaterial({ color: 0xffaa00 });
-    return new THREE.Mesh(geo, mat);
+    if (bulletTemplate) return bulletTemplate.clone(true);
+    return new THREE.Mesh(
+        new THREE.SphereGeometry(0.6, 8, 8),
+        new THREE.MeshStandardMaterial({ color: 0xffaa00 })
+    );
 }
 
-// ── PLAYER SHOOT ─────────────────────────────────────────────────────────────
+// ── SPAWN REMOTE BULLET (Phase 11) ────────────────────────────────────────────
+// Called when a bulletSpawned message arrives from another player.
+// Creates a visual bullet at the given origin travelling in dir.
+// The local host also adds this to bullets[] so it participates in kill validation.
+export function spawnBullet(scene, origin, dir, bulletId) {
+    const mesh = makeBulletMesh();
+    mesh.position.set(origin.x, 0, origin.z);
+    const d = new THREE.Vector3(dir.x, 0, dir.z).normalize();
+    mesh.rotation.y = Math.atan2(d.x, d.z);
+    scene.add(mesh);
+    bullets.push({ mesh, dir: d, speed: 0.4, bulletId });
+}
 
-// Called from main.js on left mouse click
-// Projects a ray from the camera through the mouse position, finds where it hits
-// the ground plane, then fires a bullet from the player toward that point
-export function shoot(event, camera, player, scene) {
-    // Convert mouse pixel position to normalized device coordinates (-1 to +1)
+// ── PLAYER SHOOT (Phase 11) ───────────────────────────────────────────────────
+// socket and myId are nullable — if null the bullet is local-only (no network message).
+export function shoot(event, camera, player, scene, socket, myId) {
     const mouse = new THREE.Vector2(
-        (event.clientX / window.innerWidth) * 2 - 1,
+        (event.clientX / window.innerWidth)  *  2 - 1,
         -(event.clientY / window.innerHeight) * 2 + 1
     );
-
-    // Set the raycaster to fire from the camera through the mouse position
     raycaster.setFromCamera(mouse, camera);
-
-    // Find where the ray intersects the aim plane (the flat ground at y=0)
     const targetPoint = new THREE.Vector3();
-    const hit = raycaster.ray.intersectPlane(aimPlane, targetPoint);
+    if (!raycaster.ray.intersectPlane(aimPlane, targetPoint)) return;
 
-    if (!hit) return; // ray missed the plane (shouldn't happen but safe to guard)
-
-    // Calculate the direction from the player to the target point
     const direction = new THREE.Vector3();
-    direction.subVectors(targetPoint, player.position); // targetPoint minus playerPos = direction
-    direction.y = 0;         // keep bullet on the ground plane
-    direction.normalize();   // make length 1 so bullet speed is consistent
+    direction.subVectors(targetPoint, player.position);
+    direction.y = 0;
+    direction.normalize();
+
+    bulletSeq++;
+    const bulletId = myId ? `${myId}_${bulletSeq}` : `local_${bulletSeq}`;
 
     const bullet = makeBulletMesh();
-    bullet.position.set(player.position.x, player.position.y, player.position.z); // spawn at player
-    bullet.rotation.y = Math.atan2(direction.x, direction.z); // orient tip toward travel direction
-
+    bullet.position.copy(player.position);
+    bullet.rotation.y = Math.atan2(direction.x, direction.z);
     scene.add(bullet);
-    bullets.push({ mesh: bullet, dir: direction }); // store mesh + direction for updateBullets
+    bullets.push({ mesh: bullet, dir: direction, speed: 0.4, bulletId });
+
+    // Broadcast to relay so other clients can simulate the visual (Phase 11)
+    if (socket && myId && socket.readyState === 1) {
+        if (socket.bufferedAmount < 8192) { // backpressure guard (Phase 12)
+            socket.send(JSON.stringify({
+                type:     'shoot',
+                bulletId,
+                ownerId:  myId,
+                origin:   { x: player.position.x, z: player.position.z },
+                dir:      { x: direction.x,        z: direction.z        }
+            }));
+        }
+    }
 }
 
 // ── UPDATE BULLETS ────────────────────────────────────────────────────────────
+// isHost — if true, NPC hits are registered and NPCs removed (host kill authority).
+//          if false, bullets are destroyed on NPC contact but NPCs are not removed
+//          — guests wait for npcKilled from host (Phase 11).
+// wallBoxes — pre-computed Box3 array passed from main.js (Phase 0).
+//
+// Returns { killedNpcIds: number[], bossHit: bool, newBossHp: number }
+export function updateBullets(bullets, npcs, walls, scene, isHost = true, wallBoxes = null) {
+    const killedNpcIds = [];
+    let bossHit  = false;
+    let newBossHp = -1;
 
-// Called every frame from main.js — moves all bullets and checks for collisions
-// Returns the number of NPCs killed this frame so main.js can update the kill counter
-export function updateBullets(bullets, npcs, walls, scene) {
-    let killsThisFrame = 0;
+    // Use pre-computed boxes when available (Phase 0 optimisation)
+    const wboxes = wallBoxes ?? walls.map(w => new THREE.Box3().setFromObject(w));
 
-    // Iterate backwards so splicing (removing) bullets doesn't skip indices
     for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
-
-        // Move the bullet forward along its direction each frame
-        // speed is per-bullet — enemy bullets are faster than player bullets
         bullet.mesh.position.addScaledVector(bullet.dir, bullet.speed ?? 0.4);
 
-        // Build a bounding box around the bullet for collision detection
         const bulletBox = new THREE.Box3().setFromObject(bullet.mesh);
 
         // ── WALL CHECK ────────────────────────────────────────────────────────
         let hitWall = false;
-        for (let w = 0; w < walls.length; w++) {
-            const wallBox = new THREE.Box3().setFromObject(walls[w]);
-            if (bulletBox.intersectsBox(wallBox)) {
-                scene.remove(bullet.mesh); // remove the mesh from the scene
-                bullets.splice(i, 1);      // remove from the array
+        for (let w = 0; w < wboxes.length; w++) {
+            if (bulletBox.intersectsBox(wboxes[w])) {
+                scene.remove(bullet.mesh);
+                bullets.splice(i, 1);
                 hitWall = true;
                 break;
             }
         }
+        if (hitWall) continue;
 
-        if (hitWall) continue; // bullet already destroyed — skip NPC check
-
-        // Enemy bullets (fired by the boss) should only hit the player, not NPCs
-        // Player-vs-enemy-bullet collision is handled in main.js
+        // Enemy bullets are handled separately in main.js — skip NPC check
         if (bullet.mesh.userData.isEnemyBullet) continue;
 
         // ── NPC CHECK ─────────────────────────────────────────────────────────
-        let hitNPC = false;
         for (let j = npcs.length - 1; j >= 0; j--) {
             const npcBox = new THREE.Box3().setFromObject(npcs[j]);
-            if (bulletBox.intersectsBox(npcBox)) {
-                scene.remove(bullet.mesh); // destroy the bullet
-                bullets.splice(i, 1);
-                hitNPC = true;
+            if (!bulletBox.intersectsBox(npcBox)) continue;
 
+            // Always destroy the bullet on contact
+            scene.remove(bullet.mesh);
+            bullets.splice(i, 1);
+
+            if (isHost) {
                 if (npcs[j].userData.isBoss) {
-                    // Boss takes 1 damage per bullet and has 100 total HP
                     npcs[j].userData.hp--;
-                    // Update the boss health bar width as a percentage
+                    bossHit   = true;
+                    newBossHp = npcs[j].userData.hp;
                     const pct = (npcs[j].userData.hp / 100) * 100;
                     document.getElementById('bossBarInner').style.width = pct + '%';
                     if (npcs[j].userData.hp <= 0) {
-                        // Boss is dead — hide the health bar and remove it
                         document.getElementById('bossBarContainer').style.display = 'none';
+                        const id = npcs[j].userData.id;
                         scene.remove(npcs[j]);
                         npcs.splice(j, 1);
-                        killsThisFrame++; // count boss kill for the level-up check
+                        killedNpcIds.push(id);
                     }
                 } else {
-                    // Regular fox — one hit kill
+                    const id = npcs[j].userData.id;
                     scene.remove(npcs[j]);
                     npcs.splice(j, 1);
-                    killsThisFrame++;
+                    killedNpcIds.push(id);
                 }
-                break; // one bullet can only hit one NPC
             }
+            // Guest: bullet destroyed above, NPC stays until npcKilled arrives from host
+            break;
         }
-
-        if (hitNPC) continue; // bullet already destroyed — stop processing it
     }
-    return killsThisFrame; // main.js uses this to call addKill() and spawn new foxes
+
+    return { killedNpcIds, bossHit, newBossHp };
 }
 
 // ── BOSS SHOOT ────────────────────────────────────────────────────────────────
-
-// Called from npc.js every 3 seconds when the boss is alive
-// Fires a bullet FROM the boss TOWARD the player
-// Flagged with isEnemyBullet = true so it's handled separately in main.js
+// Called from npc.js every 3 seconds on the host only (isHost guard in updateNPCs).
 export function bossShoot(boss, player, scene) {
-    // Calculate the direction from the boss to the player
     const direction = new THREE.Vector3();
-    direction.subVectors(player.position, boss.position); // player minus boss = points toward player
-    direction.y = 0;        // keep on ground plane
-    direction.normalize();  // length 1 for consistent speed
+    direction.subVectors(player.position, boss.position);
+    direction.y = 0;
+    direction.normalize();
 
     const bullet = makeBulletMesh();
-    // Offset spawn position 2 units in front of the boss so the bullet doesn't start inside it
     bullet.position.set(
         boss.position.x + direction.x * 2,
         boss.position.y,
         boss.position.z + direction.z * 2
     );
-    bullet.rotation.y = Math.atan2(direction.x, direction.z); // face direction of travel
-    bullet.scale.set(2.5, 2.5, 2.5);           // boss bullets are larger than player bullets
-    bullet.userData.isEnemyBullet = true;       // flag — tells updateBullets and main.js this is a boss bullet
+    bullet.rotation.y = Math.atan2(direction.x, direction.z);
+    bullet.scale.set(2.5, 2.5, 2.5);
+    bullet.userData.isEnemyBullet = true;
 
     scene.add(bullet);
-    bullets.push({ mesh: bullet, dir: direction, speed: 0.7 }); // 0.7 vs player's 0.4
+    bullets.push({ mesh: bullet, dir: direction, speed: 0.7 });
 }
