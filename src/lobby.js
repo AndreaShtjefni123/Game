@@ -1,14 +1,19 @@
 import * as network from './network.js';
 
 export function initLobby(onStart) {
-    const overlay   = document.getElementById('lobbyOverlay');
-    const createBtn = document.getElementById('lobbyCreate');
-    const joinBtn   = document.getElementById('lobbyJoin');
-    const soloBtn   = document.getElementById('lobbySolo');
-    const codeInput = document.getElementById('lobbyCode');
-    const codeWrap  = document.getElementById('lobbyCodeWrap');
-    const codeDisplay = document.getElementById('lobbyRoomCode');
-    const errMsg    = document.getElementById('lobbyError');
+    const overlay      = document.getElementById('lobbyOverlay');
+    const createBtn    = document.getElementById('lobbyCreate');
+    const joinBtn      = document.getElementById('lobbyJoin');
+    const soloBtn      = document.getElementById('lobbySolo');
+    const codeInput    = document.getElementById('lobbyCode');
+    const codeWrap     = document.getElementById('lobbyCodeWrap');
+    const codeDisplay  = document.getElementById('lobbyRoomCode');
+    const startBtn     = document.getElementById('lobbyStart');
+    const playerCount  = document.getElementById('lobbyPlayerCount');
+    const errMsg       = document.getElementById('lobbyError');
+
+    // Players who joined while host is waiting in the lobby
+    const waitingPlayers = [];
 
     network.connect();
 
@@ -16,15 +21,26 @@ export function initLobby(onStart) {
         errMsg.textContent = 'Creating room…';
         network.createRoom((res) => {
             if (!res.ok) { errMsg.textContent = 'Failed to create room.'; return; }
+
+            // Show the code and the Start button — NO auto-timer
             codeDisplay.textContent = res.code;
             codeWrap.style.display = 'block';
-            errMsg.textContent = 'Share the code above, then the game will start.';
-            // Start after a brief pause so the host sees the code
-            setTimeout(() => {
-                overlay.style.display = 'none';
-                onStart({ isHost: true, roomState: null });
-            }, 2000);
+            startBtn.style.display = 'block';
+            createBtn.style.display = 'none';
+            errMsg.textContent = 'Share the code above. Press Start when everyone has joined.';
+
+            // Track players joining while host waits
+            network.on('playerJoined', (p) => {
+                waitingPlayers.push(p);
+                playerCount.textContent = `Players in room: ${waitingPlayers.length + 1}`;
+                playerCount.style.display = 'block';
+            });
         });
+    });
+
+    startBtn.addEventListener('click', () => {
+        overlay.style.display = 'none';
+        onStart({ isHost: true, waitingPlayers });
     });
 
     joinBtn.addEventListener('click', () => {

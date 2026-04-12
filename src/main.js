@@ -348,6 +348,10 @@ function startGame({ isHost, roomState, solo }) {
         startPickupSpawner(scene, walls);
     } else if (isHost) {
         setupMultiplayer();
+        // Create duck meshes for anyone who joined during the lobby wait
+        if (waitingPlayers) {
+            for (const p of waitingPlayers) addRemotePlayer(p.socketId, p.x, p.z, p.rotation, p.hp);
+        }
         createNPCs(3, scene, player);
         startPickupSpawner(scene, walls);
     } else {
