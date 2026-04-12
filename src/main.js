@@ -1,13 +1,15 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { npcs, createNPCs, updateNPCs } from "./npc.js";
+import { npcs, createNPCs, updateNPCs, spawnRemoteNpc, removeNpcById, clearAllNpcs, setOnBossSpawn } from "./npc.js";
 import { bullets, shoot, updateBullets } from "./shoot.js";
-import { updateClock, showFinalTime, showFinalKills, addKill, totalKills, survivalTime } from "./clock.js";
-import { takeDamage, updateHealthBar, setDuckMesh, setGameOverCallback } from "./health.js";
-import { updatePickups, startPickupSpawner } from "./pickup.js";
-import { checkLevelUp, getCurrentLevel } from "./levels.js";
+import { updateClock, showFinalTime, showFinalKills, addKill, totalKills } from "./clock.js";
+import { takeDamage, updateHealthBar, setDuckMesh, setGameOverCallback, heal, getHealth } from "./health.js";
+import { updatePickups, startPickupSpawner, createPickupAt, removePickupById } from "./pickup.js";
+import { checkLevelUp, getCurrentLevel, doLevelUp, showLevelUpOverlay } from "./levels.js";
 import { initUltimate, updateUltimate } from "./ultimate.js";
+import * as network from "./network.js";
+import { initLobby } from "./lobby.js";
 const scene = new THREE.Scene();
 
 scene.background = new THREE.Color('skyblue');
@@ -46,6 +48,14 @@ let waddleAction = null;
 
 let lastTime = performance.now();
 
+// ── multiplayer state ─────────────────────────────────────────────────────────
+let gameStarted = false;
+const otherPlayers = new Map(); // socketId → { mesh, hpDisc, targetX, targetZ, targetRotation }
+const npcTargets   = new Map(); // npcId   → { x, z }  (lerp targets on non-host)
+let lastMoveSent = 0;
+let lastNpcSent  = 0;
+let remoteDuckTemplate = null; // set once the local duck GLB loads
+
 const loader = new GLTFLoader();
 loader.load(
     "/scriptduck.glb",
@@ -70,7 +80,8 @@ loader.load(
         duck.rotation.y = Math.PI;
 
         player.add(duck);
-        setDuckMesh(duck); // pass to health.js for flash effect
+        setDuckMesh(duck);
+        remoteDuckTemplate = duck; // used to clone meshes for remote players
 
         // Set up the Waddle animation
         if (gltf.animations && gltf.animations.length > 0) {
@@ -198,16 +209,6 @@ window.addEventListener('mousedown', (e) => {
 camera.position.set(0, 40, 0);
 camera.lookAt(0, 0, 0);
 
-createNPCs(3, scene, player);
-startPickupSpawner(scene, walls);
-initUltimate(scene, player, npcs);
-// function getSpawnAmount() {
-//     const minute = Math.floor(survivalTime / 60);
-//     return 2 * Math.pow(2, minute);
-// }
-//this would be needed only if we want the spawn rate to be based on time and kills.
-
-
 let gameOver = false;
 
 function triggerGameOver() {
@@ -218,13 +219,167 @@ function triggerGameOver() {
 }
 setGameOverCallback(triggerGameOver);
 
+// ── remote player helpers ─────────────────────────────────────────────────────
+
+function _hpColor(hp) {
+    if (hp > 60) return 0x4caf50;
+    if (hp > 30) return 0xff9800;
+    return 0xf44336;
+}
+
+function addRemotePlayer(socketId, x, z, rotation, hp) {
+    let mesh;
+    if (remoteDuckTemplate) {
+        mesh = remoteDuckTemplate.clone(true);
+        mesh.scale.set(1.5, 1.5, 1.5);
+    } else {
+        mesh = new THREE.Mesh(
+            new THREE.SphereGeometry(1, 16, 8),
+            new THREE.MeshStandardMaterial({ color: 0x00aaff })
+        );
+    }
+    mesh.position.set(x, 0, z);
+    mesh.rotation.y = rotation || 0;
+
+    // Small colour disc under the duck showing teammate HP
+    const hpGeo = new THREE.CylinderGeometry(1.2, 1.2, 0.12, 16);
+    const hpMat = new THREE.MeshStandardMaterial({ color: _hpColor(hp) });
+    const hpDisc = new THREE.Mesh(hpGeo, hpMat);
+    hpDisc.position.y = -1;
+    mesh.add(hpDisc);
+
+    scene.add(mesh);
+    otherPlayers.set(socketId, { mesh, hpDisc, targetX: x, targetZ: z, targetRotation: rotation || 0 });
+}
+
+// ── multiplayer event wiring ──────────────────────────────────────────────────
+
+function setupMultiplayer() {
+    network.on('playerJoined', ({ socketId, x, z, rotation, hp }) => {
+        addRemotePlayer(socketId, x, z, rotation, hp);
+    });
+
+    network.on('playerLeft', (socketId) => {
+        const p = otherPlayers.get(socketId);
+        if (p) { scene.remove(p.mesh); otherPlayers.delete(socketId); }
+    });
+
+    network.on('playerMoved', ({ socketId, x, z, rotation }) => {
+        const p = otherPlayers.get(socketId);
+        if (p) { p.targetX = x; p.targetZ = z; p.targetRotation = rotation; }
+    });
+
+    network.on('playerHealth', ({ socketId, hp }) => {
+        const p = otherPlayers.get(socketId);
+        if (p) p.hpDisc.material.color.setHex(_hpColor(hp));
+    });
+
+    network.on('npcPositions', (data) => {
+        if (network.isHost) return;
+        for (const { id, x, z } of data) {
+            if (!npcTargets.has(id)) {
+                spawnRemoteNpc(scene, id, x, z, false);
+                npcTargets.set(id, { x, z });
+            } else {
+                const t = npcTargets.get(id);
+                t.x = x; t.z = z;
+            }
+        }
+    });
+
+    network.on('npcRemoved', (npcId) => {
+        removeNpcById(scene, npcId);
+        npcTargets.delete(npcId);
+    });
+
+    network.on('levelUp', (newLevel) => {
+        if (network.isHost) {
+            doLevelUp(scene, npcs, player);
+        } else {
+            clearAllNpcs(scene);
+            npcTargets.clear();
+            showLevelUpOverlay(newLevel);
+            heal(100);
+        }
+    });
+
+    network.on('pickupSpawned', ({ id, x, z }) => {
+        createPickupAt(scene, id, x, z);
+    });
+
+    network.on('pickupRemoved', (id) => {
+        removePickupById(scene, id);
+    });
+
+    network.on('bossSpawned', ({ id, x, z }) => {
+        if (network.isHost) return; // host already has the boss from doLevelUp
+        spawnRemoteNpc(scene, id, x, z, true);
+    });
+
+    network.on('bossHpUpdate', (hp) => {
+        document.getElementById('bossBarContainer').style.display = 'block';
+        document.getElementById('bossBarInner').style.width = ((hp / 100) * 100) + '%';
+    });
+
+    network.on('bossDead', () => {
+        removeNpcById(scene, npcs.find(n => n.userData.isBoss)?.userData.id);
+        document.getElementById('bossBarContainer').style.display = 'none';
+    });
+
+    network.on('hostLeft', (msg) => {
+        alert(msg || 'Host has left. Session ended.');
+        window.location.reload();
+    });
+
+    // When host spawns a boss, report it to the server
+    setOnBossSpawn((boss) => {
+        if (network.isConnected() && network.isHost) {
+            network.sendBossSpawned(boss.userData.id, boss.position.x, boss.position.z);
+        }
+    });
+}
+
+// ── game start (called by lobby) ──────────────────────────────────────────────
+
+function startGame({ isHost, roomState, solo }) {
+    if (solo) {
+        // Single-player: same as before
+        createNPCs(3, scene, player);
+        startPickupSpawner(scene, walls);
+    } else if (isHost) {
+        setupMultiplayer();
+        createNPCs(3, scene, player);
+        startPickupSpawner(scene, walls);
+    } else {
+        // Non-host joining: initialise from room state
+        setupMultiplayer();
+        if (roomState.npcs) {
+            for (const n of roomState.npcs) spawnRemoteNpc(scene, n.id, n.x, n.z, false);
+            for (const n of roomState.npcs) npcTargets.set(n.id, { x: n.x, z: n.z });
+        }
+        if (roomState.pickups) {
+            for (const p of roomState.pickups) createPickupAt(scene, p.id, p.x, p.z);
+        }
+        if (roomState.players) {
+            for (const p of roomState.players) addRemotePlayer(p.socketId, p.x, p.z, p.rotation, p.hp);
+        }
+        if (roomState.boss) {
+            spawnRemoteNpc(scene, roomState.boss.id, roomState.boss.x, roomState.boss.z, true);
+            document.getElementById('bossBarInner').style.width = ((roomState.boss.hp / 100) * 100) + '%';
+        }
+    }
+
+    initUltimate(scene, player, npcs);
+    gameStarted = true;
+}
+
+initLobby(startGame);
 
 
-//it helps to draw on a loop
+
 function animate() {
     requestAnimationFrame(animate);
-    if (gameOver) return; // stops everything when dead
-    if (!modelLoaded) return; // wait for duck model to load
+    if (gameOver || !modelLoaded || !gameStarted) return;
 
     const now = performance.now();
     const delta = (now - lastTime) / 1000;
@@ -258,10 +413,10 @@ function animate() {
 
     if (mixer) mixer.update(delta);
 
-    // wall collision — use a manual bounding box for the player group
+    // wall collision
     const playerBox = new THREE.Box3().setFromCenterAndSize(
         player.position,
-        new THREE.Vector3(1.5, 2, 1.5) // approximate duck hitbox
+        new THREE.Vector3(1.5, 2, 1.5)
     );
     for (let i = 0; i < walls.length; i++) {
         const wallBox = new THREE.Box3().setFromObject(walls[i]);
@@ -271,44 +426,94 @@ function animate() {
         }
     }
 
-    if
-        (player.position.x > 50 || player.position.x < -50 || player.position.z > 50 || player.position.z < -50) {
+    if (player.position.x > 50 || player.position.x < -50 ||
+        player.position.z > 50 || player.position.z < -50) {
         gameOver = true;
         showFinalTime();
         showFinalKills();
         document.getElementById('gameOver').style.display = 'flex';
-        return; // stop the rest of this frame immediately
+        return;
     }
 
-    // update NPCs
-    updateNPCs(npcs, player, playerBox, walls);
+    // ── send player position (throttled 20 Hz) ────────────────────────────────
+    if (network.isConnected() && now - lastMoveSent >= 50) {
+        network.sendMove(player.position.x, player.position.z, player.rotation.y);
+        lastMoveSent = now;
+    }
 
-    // check if any NPC touched the player
+    // ── lerp remote player duck meshes ────────────────────────────────────────
+    for (const [, p] of otherPlayers) {
+        p.mesh.position.x += (p.targetX - p.mesh.position.x) * 0.15;
+        p.mesh.position.z += (p.targetZ - p.mesh.position.z) * 0.15;
+        let rotDiff = p.targetRotation - p.mesh.rotation.y;
+        while (rotDiff >  Math.PI) rotDiff -= 2 * Math.PI;
+        while (rotDiff < -Math.PI) rotDiff += 2 * Math.PI;
+        p.mesh.rotation.y += rotDiff * 0.2;
+    }
+
+    // ── NPC update (host or solo only) ────────────────────────────────────────
+    if (!network.isConnected() || network.isHost) {
+        updateNPCs(npcs, player, playerBox, walls);
+    }
+
+    // ── lerp remote NPC meshes toward received positions (non-host) ──────────
+    if (network.isConnected() && !network.isHost) {
+        for (const [id, t] of npcTargets) {
+            const npc = npcs.find(n => n.userData.id === id);
+            if (npc) {
+                npc.position.x += (t.x - npc.position.x) * 0.3;
+                npc.position.z += (t.z - npc.position.z) * 0.3;
+            }
+        }
+    }
+
+    // ── send NPC positions (host only, throttled 20 Hz) ───────────────────────
+    if (network.isConnected() && network.isHost && now - lastNpcSent >= 50) {
+        network.sendNpcPositions(npcs.map(n => ({ id: n.userData.id, x: n.position.x, z: n.position.z })));
+        lastNpcSent = now;
+    }
+
+    // NPC contact damage
     for (let i = 0; i < npcs.length; i++) {
         const npcBox = new THREE.Box3().setFromObject(npcs[i]);
         if (npcBox.intersectsBox(playerBox)) {
             takeDamage(20);
-            break; // only one hit per frame
+            if (network.isConnected()) network.sendHealth(getHealth());
+            break;
         }
     }
     if (gameOver) return;
-    // update popcorn pickups
-    updatePickups(scene, player);
 
+    updatePickups(scene, player);
     updateHealthBar();
     updateUltimate(delta);
 
+    // ── bullets → kills ───────────────────────────────────────────────────────
     const SPAWN_PER_KILL = 2;
-    const killsThisFrame = updateBullets(bullets, npcs, walls, scene);
+    const { kills: killsThisFrame, killedIds } = updateBullets(bullets, npcs, walls, scene);
     if (killsThisFrame > 0) {
-        for (let k = 0; k < killsThisFrame; k++) {
-            addKill();
+        for (let k = 0; k < killsThisFrame; k++) addKill();
+
+        if (network.isConnected()) {
+            for (const id of killedIds) network.sendKill(id);
         }
-        createNPCs(SPAWN_PER_KILL * killsThisFrame, scene, player);
+
+        // Only the host (or solo) spawns replacement NPCs
+        if (!network.isConnected() || network.isHost) {
+            createNPCs(SPAWN_PER_KILL * killsThisFrame, scene, player);
+        }
+
+        // Clean npcTargets for non-host
+        if (network.isConnected() && !network.isHost) {
+            for (const id of killedIds) npcTargets.delete(id);
+        }
     }
 
-    // check if the player has hit the kill target for the current level
-    checkLevelUp(totalKills, scene, npcs, player);
+    // ── level-up (solo only — multiplayer driven by server levelUp event) ─────
+    if (!network.isConnected()) {
+        checkLevelUp(totalKills, scene, npcs, player);
+    }
+
     document.getElementById('level').textContent = `Level ${getCurrentLevel()}`;
 
     // top-down camera follows player

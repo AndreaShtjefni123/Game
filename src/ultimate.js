@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { addKill } from './clock.js';
+import * as network from './network.js';
 
 const CHARGE_TIME = 30;   // seconds to fully charge
 const DUCK_COUNT = 7;
@@ -108,6 +109,7 @@ export function updateUltimate(delta) {
                 sceneRef.remove(npc);
                 npcsRef.splice(j, 1);
                 addKill();
+                network.sendKill(npc.userData.id);
                 sceneRef.remove(d.mesh);
                 activeDucks.splice(i, 1);
                 hit = true;

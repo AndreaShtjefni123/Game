@@ -60,7 +60,7 @@ export function checkLevelUp(totalKills, scene, npcs, player) {
 //   6. Spawn a fresh starting wave sized for the new level
 //   7. Unlock so normal gameplay resumes
 // ─────────────────────────────────────────────
-function doLevelUp(scene, npcs, player) {
+export function doLevelUp(scene, npcs, player) {
     levelingUp = true;
 
     // Step 2 — advance level and set next kill target
@@ -111,7 +111,7 @@ function getNextKillTarget(level) {
 // Creates a DOM div, animates it in, holds, then removes it.
 // No permanent HTML needed — it's built and destroyed in JS.
 // ─────────────────────────────────────────────
-function showLevelUpOverlay(level) {
+export function showLevelUpOverlay(level) {
     // Inject the CSS keyframes once so we don't duplicate them
     if (!document.getElementById('levelUpStyle')) {
         const style = document.createElement('style');

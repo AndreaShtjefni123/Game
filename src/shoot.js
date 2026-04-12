@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import * as network from './network.js';
 
 export const bullets = [];
 
@@ -65,8 +66,11 @@ export function shoot(event, camera, player, scene) {
     bullets.push({ mesh: bullet, dir: direction });
 }
 
-export function updateBullets(bullets, npcs, walls, scene) { // walls added here
+// Returns { kills, killedIds } so main.js can report kills to the server.
+export function updateBullets(bullets, npcs, walls, scene) {
     let killsThisFrame = 0;
+    const killedIds = [];
+
     for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
         bullet.mesh.position.addScaledVector(bullet.dir, 0.4);
@@ -77,7 +81,6 @@ export function updateBullets(bullets, npcs, walls, scene) { // walls added here
         for (let w = 0; w < walls.length; w++) {
             const wallBox = new THREE.Box3().setFromObject(walls[w]);
             if (bulletBox.intersectsBox(wallBox)) {
-                // remove bullet, stop it here
                 scene.remove(bullet.mesh);
                 bullets.splice(i, 1);
                 hitWall = true;
@@ -85,7 +88,7 @@ export function updateBullets(bullets, npcs, walls, scene) { // walls added here
             }
         }
 
-        if (hitWall) continue; // skip NPC check if already destroyed
+        if (hitWall) continue;
 
         // check if bullet hit any NPC
         let hitNPC = false;
@@ -97,16 +100,24 @@ export function updateBullets(bullets, npcs, walls, scene) { // walls added here
                 hitNPC = true;
 
                 if (npcs[j].userData.isBoss) {
-                    npcs[j].userData.hp--;
-                    const pct = (npcs[j].userData.hp / 100) * 100;
-                    document.getElementById('bossBarInner').style.width = pct + '%';
-                    if (npcs[j].userData.hp <= 0) {
-                        document.getElementById('bossBarContainer').style.display = 'none';
-                        scene.remove(npcs[j]);
-                        npcs.splice(j, 1);
-                        killsThisFrame++;
+                    if (network.isConnected()) {
+                        // Multiplayer: server owns boss HP — just report the hit
+                        network.sendBossDamage();
+                    } else {
+                        // Single player: handle boss HP locally
+                        npcs[j].userData.hp--;
+                        const pct = (npcs[j].userData.hp / 100) * 100;
+                        document.getElementById('bossBarInner').style.width = pct + '%';
+                        if (npcs[j].userData.hp <= 0) {
+                            document.getElementById('bossBarContainer').style.display = 'none';
+                            if (npcs[j].userData.id !== undefined) killedIds.push(npcs[j].userData.id);
+                            scene.remove(npcs[j]);
+                            npcs.splice(j, 1);
+                            killsThisFrame++;
+                        }
                     }
                 } else {
+                    if (npcs[j].userData.id !== undefined) killedIds.push(npcs[j].userData.id);
                     scene.remove(npcs[j]);
                     npcs.splice(j, 1);
                     killsThisFrame++;
@@ -117,5 +128,5 @@ export function updateBullets(bullets, npcs, walls, scene) { // walls added here
 
         if (hitNPC) continue;
     }
-    return killsThisFrame;
+    return { kills: killsThisFrame, killedIds };
 }

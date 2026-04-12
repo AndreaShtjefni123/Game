@@ -3,6 +3,15 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 export const npcs = [];
 
+// Auto-incrementing ID assigned to every NPC at spawn.
+// Used for kill dedup, NPC sync, and boss events.
+let _nextNpcId = 0;
+
+// Optional callback fired when a boss mesh is added to the scene (host uses
+// this to emit bossSpawned to the server).
+let _onBossSpawn = null;
+export function setOnBossSpawn(cb) { _onBossSpawn = cb; }
+
 // Load the fox model ONCE — every spawn clones this template
 let foxTemplate = null;
 const pendingSpawns = []; // queued spawns requested before model finished loading
@@ -59,6 +68,7 @@ function _spawnFoxNow(scene, player) {
     npc.scale.set(3, 3, 3);
     const { x, z } = randomPos(player);
     npc.position.set(x, 0, z);
+    npc.userData.id = _nextNpcId++;
     scene.add(npc);
     npcs.push(npc);
 }
@@ -71,12 +81,52 @@ function _spawnBossNow(scene, player) {
     boss.scale.set(8, 8, 8);
     boss.userData.isBoss = true;
     boss.userData.hp = 100;
+    boss.userData.id = _nextNpcId++;
     const { x, z } = randomPos(player);
     boss.position.set(x, 0, z);
     scene.add(boss);
     npcs.push(boss);
     document.getElementById('bossBarContainer').style.display = 'block';
     document.getElementById('bossBarInner').style.width = '100%';
+    if (_onBossSpawn) _onBossSpawn(boss);
+}
+
+// ── multiplayer helpers ───────────────────────────────────────────────────────
+
+// Used by non-host clients to create a received NPC mesh.
+export function spawnRemoteNpc(scene, id, x, z, isBoss = false) {
+    const mesh = foxTemplate
+        ? foxTemplate.clone(true)
+        : makeFallbackBox(isBoss ? 4 : 1.5, isBoss ? 6 : 2, isBoss ? 4 : 1.5, isBoss ? 0x800000 : 0xff0000);
+    mesh.scale.set(isBoss ? 8 : 3, isBoss ? 8 : 3, isBoss ? 8 : 3);
+    mesh.position.set(x, 0, z);
+    mesh.userData.id = id;
+    mesh.userData.isBoss = isBoss;
+    if (isBoss) {
+        mesh.userData.hp = 100;
+        document.getElementById('bossBarContainer').style.display = 'block';
+        document.getElementById('bossBarInner').style.width = '100%';
+    }
+    scene.add(mesh);
+    npcs.push(mesh);
+    return mesh;
+}
+
+// Remove a single NPC by ID — safe to call if already removed.
+export function removeNpcById(scene, id) {
+    const idx = npcs.findIndex(n => n.userData.id === id);
+    if (idx !== -1) {
+        scene.remove(npcs[idx]);
+        npcs.splice(idx, 1);
+    }
+}
+
+// Clear every NPC mesh (used by non-host clients on levelUp).
+export function clearAllNpcs(scene) {
+    for (let i = npcs.length - 1; i >= 0; i--) {
+        scene.remove(npcs[i]);
+    }
+    npcs.length = 0;
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
