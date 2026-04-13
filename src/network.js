@@ -12,7 +12,7 @@ const EVENTS = [
     'npcPositions', 'npcRemoved',
     'levelUp', 'playerHealth',
     'pickupSpawned', 'pickupRemoved',
-    'bossSpawned', 'bossHpUpdate', 'bossDead', 'hostLeft'
+    'bossSpawned', 'bossHpUpdate', 'bossDead', 'hostLeft', 'gameStart'
 ];
 
 export function connect() {
@@ -75,4 +75,8 @@ export function sendBossSpawned(id, x, z) {
 
 export function sendBossDamage() {
     if (isConnected()) socket.emit('bossDamage');
+}
+
+export function sendStartGame() {
+    if (isConnected()) socket.emit('startGame');
 }

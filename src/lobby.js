@@ -39,6 +39,7 @@ export function initLobby(onStart) {
     });
 
     startBtn.addEventListener('click', () => {
+        network.sendStartGame();
         overlay.style.display = 'none';
         onStart({ isHost: true, waitingPlayers });
     });
@@ -49,8 +50,21 @@ export function initLobby(onStart) {
         errMsg.textContent = 'Joining…';
         network.joinRoom(code, (res) => {
             if (!res.ok) { errMsg.textContent = res.error || 'Room not found.'; return; }
-            overlay.style.display = 'none';
-            onStart({ isHost: false, roomState: res });
+
+            // Show waiting screen — do NOT start yet
+            createBtn.style.display = 'none';
+            joinBtn.style.display = 'none';
+            codeInput.style.display = 'none';
+            soloBtn.style.display = 'none';
+            errMsg.textContent = '';
+            playerCount.textContent = 'Waiting for host to start the game…';
+            playerCount.style.display = 'block';
+
+            // Start only when host signals
+            network.on('gameStart', () => {
+                overlay.style.display = 'none';
+                onStart({ isHost: false, roomState: res });
+            });
         });
     });
 

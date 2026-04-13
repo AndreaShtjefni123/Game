@@ -89,6 +89,7 @@ function _spawnBossNow(scene, player) {
     document.getElementById('bossBarContainer').style.display = 'block';
     document.getElementById('bossBarInner').style.width = '100%';
     if (_onBossSpawn) _onBossSpawn(boss);
+    createNPCs(5, scene, player);
 }
 
 // ── multiplayer helpers ───────────────────────────────────────────────────────
@@ -112,11 +113,25 @@ export function spawnRemoteNpc(scene, id, x, z, isBoss = false) {
     return mesh;
 }
 
+function disposeMesh(mesh) {
+    mesh.traverse((child) => {
+        if (child.isMesh) {
+            child.geometry?.dispose();
+            if (Array.isArray(child.material)) {
+                child.material.forEach(m => m.dispose());
+            } else {
+                child.material?.dispose();
+            }
+        }
+    });
+}
+
 // Remove a single NPC by ID — safe to call if already removed.
 export function removeNpcById(scene, id) {
     const idx = npcs.findIndex(n => n.userData.id === id);
     if (idx !== -1) {
         scene.remove(npcs[idx]);
+        disposeMesh(npcs[idx]);
         npcs.splice(idx, 1);
     }
 }
@@ -125,14 +140,19 @@ export function removeNpcById(scene, id) {
 export function clearAllNpcs(scene) {
     for (let i = npcs.length - 1; i >= 0; i--) {
         scene.remove(npcs[i]);
+        disposeMesh(npcs[i]);
     }
     npcs.length = 0;
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
 
+const MAX_FOXES = 19;
+
 export function createNPCs(amount, scene, player) {
-    for (let i = 0; i < amount; i++) {
+    const regularFoxes = npcs.filter(n => !n.userData.isBoss).length;
+    const toSpawn = Math.min(amount, MAX_FOXES - regularFoxes);
+    for (let i = 0; i < toSpawn; i++) {
         if (foxTemplate) {
             _spawnFoxNow(scene, player);
         } else {
@@ -149,18 +169,31 @@ export function createBoss(scene, player) {
     }
 }
 
-export function updateNPCs(npcs, player, _playerBox, walls) {
+// allTargets: array of THREE.Vector3 positions for every player (local + remote).
+// wallBoxes: pre-computed Box3 array — pass the cached array from main.js.
+export function updateNPCs(npcs, player, _playerBox, wallBoxes, allTargets = []) {
+    // Build a combined list: local player + any extra positions passed in
+    const targets = [player.position, ...allTargets];
+
     for (let i = 0; i < npcs.length; i++) {
         const npc = npcs[i];
 
         const previousPosition = npc.position.clone();
 
+        // Find nearest target
+        let nearest = targets[0];
+        let nearestDist = npc.position.distanceTo(nearest);
+        for (let t = 1; t < targets.length; t++) {
+            const d = npc.position.distanceTo(targets[t]);
+            if (d < nearestDist) { nearestDist = d; nearest = targets[t]; }
+        }
+
         const direction = new THREE.Vector3();
-        direction.subVectors(player.position, npc.position);
+        direction.subVectors(nearest, npc.position);
         direction.y = 0;
         direction.normalize();
 
-        // face the player
+        // face the target
         npc.rotation.y = Math.atan2(direction.x, direction.z) + Math.PI;
 
         const speed = npc.userData.isBoss ? 0.05 : 0.10;
@@ -194,8 +227,8 @@ export function updateNPCs(npcs, player, _playerBox, walls) {
 
         const npcBox = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
         let blocked = false;
-        for (let j = 0; j < walls.length; j++) {
-            if (npcBox.intersectsBox(new THREE.Box3().setFromObject(walls[j]))) {
+        for (let j = 0; j < wallBoxes.length; j++) {
+            if (npcBox.intersectsBox(wallBoxes[j])) {
                 blocked = true;
                 break;
             }
@@ -209,8 +242,8 @@ export function updateNPCs(npcs, player, _playerBox, walls) {
 
         const npcBoxX = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
         let blockedX = false;
-        for (let j = 0; j < walls.length; j++) {
-            if (npcBoxX.intersectsBox(new THREE.Box3().setFromObject(walls[j]))) {
+        for (let j = 0; j < wallBoxes.length; j++) {
+            if (npcBoxX.intersectsBox(wallBoxes[j])) {
                 blockedX = true;
                 break;
             }
@@ -222,8 +255,8 @@ export function updateNPCs(npcs, player, _playerBox, walls) {
 
         const npcBoxZ = new THREE.Box3().setFromCenterAndSize(npc.position, NPC_SIZE);
         let blockedZ = false;
-        for (let j = 0; j < walls.length; j++) {
-            if (npcBoxZ.intersectsBox(new THREE.Box3().setFromObject(walls[j]))) {
+        for (let j = 0; j < wallBoxes.length; j++) {
+            if (npcBoxZ.intersectsBox(wallBoxes[j])) {
                 blockedZ = true;
                 break;
             }

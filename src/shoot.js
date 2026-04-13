@@ -70,6 +70,7 @@ export function shoot(event, camera, player, scene) {
 export function updateBullets(bullets, npcs, walls, scene) {
     let killsThisFrame = 0;
     const killedIds = [];
+    let bossKilled = false;
 
     for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
@@ -114,6 +115,7 @@ export function updateBullets(bullets, npcs, walls, scene) {
                             scene.remove(npcs[j]);
                             npcs.splice(j, 1);
                             killsThisFrame++;
+                            bossKilled = true;
                         }
                     }
                 } else {
@@ -128,5 +130,5 @@ export function updateBullets(bullets, npcs, walls, scene) {
 
         if (hitNPC) continue;
     }
-    return { kills: killsThisFrame, killedIds };
+    return { kills: killsThisFrame, killedIds, bossKilled };
 }

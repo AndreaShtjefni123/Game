@@ -165,6 +165,8 @@ function createWalls(amount) {
     }
 }
 createWalls(10);
+// Cache wall boxes — walls never move so these never need recomputing
+const wallBoxes = walls.map(w => new THREE.Box3().setFromObject(w));
 
 const floorGeometry = new THREE.PlaneGeometry(100, 100);
 const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 });
@@ -228,28 +230,34 @@ function _hpColor(hp) {
 }
 
 function addRemotePlayer(socketId, x, z, rotation, hp) {
-    let mesh;
+    // Wrap the duck clone in a Group (same as local player) so the group's
+    // rotation.y controls direction while the duck's built-in Math.PI offset
+    // stays intact inside the group.
+    const group = new THREE.Group();
+
     if (remoteDuckTemplate) {
-        mesh = remoteDuckTemplate.clone(true);
-        mesh.scale.set(1.5, 1.5, 1.5);
+        const duckClone = remoteDuckTemplate.clone(true);
+        duckClone.scale.set(1.5, 1.5, 1.5);
+        group.add(duckClone);
     } else {
-        mesh = new THREE.Mesh(
+        group.add(new THREE.Mesh(
             new THREE.SphereGeometry(1, 16, 8),
             new THREE.MeshStandardMaterial({ color: 0x00aaff })
-        );
+        ));
     }
-    mesh.position.set(x, 0, z);
-    mesh.rotation.y = rotation || 0;
+
+    group.position.set(x, 0, z);
+    group.rotation.y = rotation || 0;
 
     // Small colour disc under the duck showing teammate HP
     const hpGeo = new THREE.CylinderGeometry(1.2, 1.2, 0.12, 16);
     const hpMat = new THREE.MeshStandardMaterial({ color: _hpColor(hp) });
     const hpDisc = new THREE.Mesh(hpGeo, hpMat);
     hpDisc.position.y = -1;
-    mesh.add(hpDisc);
+    group.add(hpDisc);
 
-    scene.add(mesh);
-    otherPlayers.set(socketId, { mesh, hpDisc, targetX: x, targetZ: z, targetRotation: rotation || 0 });
+    scene.add(group);
+    otherPlayers.set(socketId, { mesh: group, hpDisc, targetX: x, targetZ: z, targetRotation: rotation || 0 });
 }
 
 // ── multiplayer event wiring ──────────────────────────────────────────────────
@@ -261,7 +269,17 @@ function setupMultiplayer() {
 
     network.on('playerLeft', (socketId) => {
         const p = otherPlayers.get(socketId);
-        if (p) { scene.remove(p.mesh); otherPlayers.delete(socketId); }
+        if (p) {
+            scene.remove(p.mesh);
+            p.mesh.traverse((child) => {
+                if (child.isMesh) {
+                    child.geometry?.dispose();
+                    if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                    else child.material?.dispose();
+                }
+            });
+            otherPlayers.delete(socketId);
+        }
     });
 
     network.on('playerMoved', ({ socketId, x, z, rotation }) => {
@@ -276,20 +294,26 @@ function setupMultiplayer() {
 
     network.on('npcPositions', (data) => {
         if (network.isHost) return;
-        for (const { id, x, z } of data) {
+        for (const { id, x, z, ry } of data) {
             if (!npcTargets.has(id)) {
                 spawnRemoteNpc(scene, id, x, z, false);
-                npcTargets.set(id, { x, z });
+                npcTargets.set(id, { x, z, ry: ry || 0 });
             } else {
                 const t = npcTargets.get(id);
-                t.x = x; t.z = z;
+                t.x = x; t.z = z; t.ry = ry || 0;
             }
         }
     });
 
     network.on('npcRemoved', (npcId) => {
+        // wasPresent: true only for kills made by a remote player (the host's
+        // own kills are already removed by updateBullets before this event fires)
+        const wasPresent = npcs.some(n => n.userData.id === npcId);
         removeNpcById(scene, npcId);
         npcTargets.delete(npcId);
+        if (network.isHost && wasPresent) {
+            createNPCs(2, scene, player);
+        }
     });
 
     network.on('levelUp', (newLevel) => {
@@ -341,7 +365,7 @@ function setupMultiplayer() {
 
 // ── game start (called by lobby) ──────────────────────────────────────────────
 
-function startGame({ isHost, roomState, solo }) {
+function startGame({ isHost, roomState, solo, waitingPlayers }) {
     if (solo) {
         // Single-player: same as before
         createNPCs(3, scene, player);
@@ -422,9 +446,8 @@ function animate() {
         player.position,
         new THREE.Vector3(1.5, 2, 1.5)
     );
-    for (let i = 0; i < walls.length; i++) {
-        const wallBox = new THREE.Box3().setFromObject(walls[i]);
-        if (playerBox.intersectsBox(wallBox)) {
+    for (let i = 0; i < wallBoxes.length; i++) {
+        if (playerBox.intersectsBox(wallBoxes[i])) {
             player.position.copy(previousPosition);
             break;
         }
@@ -457,23 +480,28 @@ function animate() {
 
     // ── NPC update (host or solo only) ────────────────────────────────────────
     if (!network.isConnected() || network.isHost) {
-        updateNPCs(npcs, player, playerBox, walls);
+        // Pass remote player positions so NPCs chase the nearest player
+        const remotePositions = [...otherPlayers.values()]
+            .map(p => new THREE.Vector3(p.targetX, 0, p.targetZ));
+        updateNPCs(npcs, player, playerBox, wallBoxes, remotePositions);
     }
 
     // ── lerp remote NPC meshes toward received positions (non-host) ──────────
     if (network.isConnected() && !network.isHost) {
+        const npcById = new Map(npcs.map(n => [n.userData.id, n]));
         for (const [id, t] of npcTargets) {
-            const npc = npcs.find(n => n.userData.id === id);
+            const npc = npcById.get(id);
             if (npc) {
-                npc.position.x += (t.x - npc.position.x) * 0.3;
-                npc.position.z += (t.z - npc.position.z) * 0.3;
+                npc.position.x += (t.x - npc.position.x) * 0.1;
+                npc.position.z += (t.z - npc.position.z) * 0.1;
+                if (t.ry !== undefined) npc.rotation.y = t.ry;
             }
         }
     }
 
     // ── send NPC positions (host only, throttled 20 Hz) ───────────────────────
     if (network.isConnected() && network.isHost && now - lastNpcSent >= 50) {
-        network.sendNpcPositions(npcs.map(n => ({ id: n.userData.id, x: n.position.x, z: n.position.z })));
+        network.sendNpcPositions(npcs.map(n => ({ id: n.userData.id, x: n.position.x, z: n.position.z, ry: n.rotation.y })));
         lastNpcSent = now;
     }
 
@@ -494,7 +522,7 @@ function animate() {
 
     // ── bullets → kills ───────────────────────────────────────────────────────
     const SPAWN_PER_KILL = 2;
-    const { kills: killsThisFrame, killedIds } = updateBullets(bullets, npcs, walls, scene);
+    const { kills: killsThisFrame, killedIds, bossKilled } = updateBullets(bullets, npcs, walls, scene);
     if (killsThisFrame > 0) {
         for (let k = 0; k < killsThisFrame; k++) addKill();
 
@@ -515,7 +543,11 @@ function animate() {
 
     // ── level-up (solo only — multiplayer driven by server levelUp event) ─────
     if (!network.isConnected()) {
-        checkLevelUp(totalKills, scene, npcs, player);
+        if (bossKilled) {
+            doLevelUp(scene, npcs, player);
+        } else {
+            checkLevelUp(totalKills, scene, npcs, player);
+        }
     }
 
     document.getElementById('level').textContent = `Level ${getCurrentLevel()}`;

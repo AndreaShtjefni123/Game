@@ -106,6 +106,13 @@ io.on('connection', (socket) => {
         _checkLevelUp(roomCode);
     });
 
+    socket.on('startGame', () => {
+        if (!roomCode || !rooms[roomCode]) return;
+        if (socket.id !== rooms[roomCode].hostId) return;
+        socket.to(roomCode).emit('gameStart');
+        console.log(`Room ${roomCode} game started by host`);
+    });
+
     socket.on('spawnPickup', ({ id, x, z }) => {
         if (!roomCode || !rooms[roomCode]) return;
         const room = rooms[roomCode];
@@ -139,8 +146,10 @@ io.on('connection', (socket) => {
         if (room.bossHp <= 0) {
             room.bossState = null;
             io.in(roomCode).emit('bossDead');
-            room.kills++;
-            _checkLevelUp(roomCode);
+            room.level++;
+            room.killTarget = getNextKillTarget(room.level, room.killTarget);
+            room.deadNpcIds.clear();
+            io.in(roomCode).emit('levelUp', room.level);
         }
     });
 
