@@ -19,8 +19,9 @@ let gameStarted = false;
 let gameOver    = false;
 
 // Host tracks each guest's last known position (from move messages) and HP
-const guestStates = new Map(); // guestId → { x, z, hp, lastHitTime }
-const guests      = new Set(); // guestIds who have sent 'ready'
+const guestStates   = new Map(); // guestId → { x, z, hp, lastHitTime }
+const guests        = new Set(); // guestIds who have sent 'ready'
+const pendingGuests = [];        // guestIds who joined before host clicked Start
 
 // Wall seed — host generates, guest receives via init
 let wallSeed  = null;
@@ -290,9 +291,9 @@ socket.onmessage = (event) => {
     if (data.type === 'roomCreated') {
         myId   = data.myId;
         myRole = 'host';
-        document.getElementById('roomCode').textContent    = data.code;
+        document.getElementById('roomCode').textContent      = data.code;
         document.getElementById('roomDisplay').style.display = 'block';
-        startGame();
+        // Don't start yet — wait for at least one guest, then host clicks Start Game
         return;
     }
 
@@ -308,16 +309,29 @@ socket.onmessage = (event) => {
         return;
     }
 
-    // ── HOST: guest joined — send world state ─────────────────────────────────
+    // ── HOST: guest joined ────────────────────────────────────────────────────
     if (data.type === 'guestJoined') {
-        spawnRemotePlayer(data.guestId);
-        if (socket.readyState === 1) {
-            socket.send(JSON.stringify({
-                type:    'init',
-                to:      data.guestId,
-                wallSeed,
-                hostPos: { x: player.position.x, z: player.position.z }
-            }));
+        if (!gameStarted) {
+            // Game hasn't started yet — queue the guest and enable Start button
+            pendingGuests.push(data.guestId);
+            const n = pendingGuests.length;
+            document.getElementById('waitingStatus').textContent =
+                `${n} player${n > 1 ? 's' : ''} joined — ready to start!`;
+            const btn = document.getElementById('startBtn');
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            btn.style.cursor  = 'pointer';
+        } else {
+            // Game already running — send world state immediately
+            spawnRemotePlayer(data.guestId);
+            if (socket.readyState === 1) {
+                socket.send(JSON.stringify({
+                    type:    'init',
+                    to:      data.guestId,
+                    wallSeed,
+                    hostPos: { x: player.position.x, z: player.position.z }
+                }));
+            }
         }
         return;
     }
